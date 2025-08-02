@@ -60,7 +60,9 @@ class PhotoOrganizer:
                  geo_radius_km: float = 10.0,
                  min_event_photos: int = 10,
                  use_geocoding: bool = True,
-                 max_workers: int = None):
+                 max_workers: int = None,
+                 generate_script: bool = False,
+                 script_path: str = "photo_move_script.sh"):
         """
         Initialisiert den Photo Organizer
         
@@ -73,6 +75,8 @@ class PhotoOrganizer:
             min_event_photos: Mindestanzahl Fotos für Event-Erstellung
             use_geocoding: Aktiviert Reverse-Geocoding für Ortsnamen
             max_workers: Anzahl paralleler Threads (None = auto)
+            generate_script: Erzeugt Shell-Script für spätere Ausführung
+            script_path: Pfad für das Shell-Script
         """
         self.source_dir = Path(source_dir)
         self.target_dir = Path(target_dir)
@@ -82,6 +86,8 @@ class PhotoOrganizer:
         self.min_event_photos = min_event_photos
         self.use_geocoding = use_geocoding and GEOCODING_AVAILABLE
         self.max_workers = max_workers or min(32, (os.cpu_count() or 1) + 4)
+        self.generate_script = generate_script
+        self.script_path = Path(script_path)
         
         self.supported_extensions = {'.jpg', '.jpeg', '.png', '.tiff', '.tif', '.mov', '.mp4', '.avi', '.vid'}
         self.video_extensions = {'.mov', '.mp4', '.avi', '.vid'}
@@ -94,6 +100,9 @@ class PhotoOrganizer:
         self.location_cache_lock = threading.Lock()
         self.hash_cache: Dict[str, str] = {}
         self.hash_cache_lock = threading.Lock()
+        
+        # Shell-Script Sammlung
+        self.move_commands: List[Tuple[Path, Path]] = []  # (source, target)
         
         print(f"Initialisiert mit {self.max_workers} parallelen Threads")
         
@@ -157,6 +166,144 @@ class PhotoOrganizer:
                     continue
         
         return None
+    
+    def escape_shell_path(self, path: Path) -> str:
+        """Escapet Pfade für sichere Shell-Verwendung"""
+        return f"'{str(path).replace(chr(39), chr(39) + chr(92) + chr(39) + chr(39))}'"
+    
+    def generate_shell_script(self, events: Dict[str, List[PhotoInfo]]) -> None:
+        """Erzeugt Shell-Script für die Foto-Organisation"""
+        script_content = []
+        
+        # Script-Header
+        script_content.append("#!/bin/bash")
+        script_content.append("# Automatisch generiertes Script für Foto-Organisation")
+        script_content.append(f"# Erstellt am: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        script_content.append(f"# Quelle: {self.source_dir}")
+        script_content.append(f"# Ziel: {self.target_dir}")
+        script_content.append("")
+        script_content.append("set -e  # Stoppe bei Fehlern")
+        script_content.append("set -u  # Stoppe bei undefinierten Variablen")
+        script_content.append("")
+        script_content.append("# Farben für Output")
+        script_content.append('GREEN="\\033[0;32m"')
+        script_content.append('RED="\\033[0;31m"')
+        script_content.append('BLUE="\\033[0;34m"')
+        script_content.append('NC="\\033[0m"  # No Color')
+        script_content.append("")
+        script_content.append("# Statistiken")
+        script_content.append("moved_count=0")
+        script_content.append("error_count=0")
+        script_content.append("total_files=0")
+        script_content.append("")
+        script_content.append("# Funktion für sicheres Verschieben")
+        script_content.append("safe_move() {")
+        script_content.append("    local source=\"$1\"")
+        script_content.append("    local target=\"$2\"")
+        script_content.append("    local target_dir")
+        script_content.append("    target_dir=\"$(dirname \"$target\")\"")
+        script_content.append("    ")
+        script_content.append("    # Prüfe ob Quelldatei existiert")
+        script_content.append("    if [[ ! -f \"$source\" ]]; then")
+        script_content.append("        echo -e \"${RED}❌ Quelldatei nicht gefunden: $source${NC}\"")
+        script_content.append("        ((error_count++))")
+        script_content.append("        return 1")
+        script_content.append("    fi")
+        script_content.append("    ")
+        script_content.append("    # Erstelle Zielverzeichnis")
+        script_content.append("    if ! mkdir -p \"$target_dir\"; then")
+        script_content.append("        echo -e \"${RED}❌ Konnte Zielverzeichnis nicht erstellen: $target_dir${NC}\"")
+        script_content.append("        ((error_count++))")
+        script_content.append("        return 1")
+        script_content.append("    fi")
+        script_content.append("    ")
+        script_content.append("    # Handle Namenskonflikte")
+        script_content.append("    local final_target=\"$target\"")
+        script_content.append("    local counter=1")
+        script_content.append("    local base_name")
+        script_content.append("    local extension")
+        script_content.append("    ")
+        script_content.append("    if [[ -f \"$final_target\" ]]; then")
+        script_content.append("        base_name=\"$(basename \"$target\" | sed 's/\\.[^.]*$//')\"")
+        script_content.append("        extension=\"${target##*.}\"")
+        script_content.append("        ")
+        script_content.append("        while [[ -f \"$final_target\" ]]; do")
+        script_content.append("            final_target=\"$target_dir/${base_name}_${counter}.${extension}\"")
+        script_content.append("            ((counter++))")
+        script_content.append("        done")
+        script_content.append("    fi")
+        script_content.append("    ")
+        script_content.append("    # Verschiebe Datei")
+        script_content.append("    if mv \"$source\" \"$final_target\"; then")
+        script_content.append("        echo -e \"${GREEN}✅ $(basename \"$source\") -> $(basename \"$final_target\")${NC}\"")
+        script_content.append("        ((moved_count++))")
+        script_content.append("    else")
+        script_content.append("        echo -e \"${RED}❌ Fehler beim Verschieben: $source${NC}\"")
+        script_content.append("        ((error_count++))")
+        script_content.append("        return 1")
+        script_content.append("    fi")
+        script_content.append("}")
+        script_content.append("")
+        script_content.append("echo -e \"${BLUE}🚀 Starte Foto-Organisation...${NC}\"")
+        script_content.append("echo")
+        script_content.append("")
+        
+        # Sammle alle Move-Kommandos
+        all_moves = []
+        
+        for event_name, photos in events.items():
+            target_folder = self.target_dir / event_name
+            
+            script_content.append(f"# 📁 {event_name}/ ({len(photos)} Dateien)")
+            script_content.append(f"echo -e \"${{BLUE}}📁 {event_name}/ ({len(photos)} Dateien)${{NC}}\"")
+            
+            for photo in photos:
+                target_path = target_folder / photo.filepath.name
+                
+                # Sammle für Statistiken
+                all_moves.append((photo.filepath, target_path))
+                
+                # Shell-Kommando
+                source_escaped = self.escape_shell_path(photo.filepath)
+                target_escaped = self.escape_shell_path(target_path)
+                
+                script_content.append(f"safe_move {source_escaped} {target_escaped}")
+                script_content.append("((total_files++))")
+            
+            script_content.append("echo")
+        
+        # Script-Footer mit Statistiken
+        script_content.append("")
+        script_content.append("# Zusammenfassung")
+        script_content.append("echo")
+        script_content.append("echo -e \"${BLUE}=== ZUSAMMENFASSUNG ===${NC}\"")
+        script_content.append("echo -e \"${GREEN}✅ $moved_count Dateien erfolgreich verschoben${NC}\"")
+        script_content.append("if [[ $error_count -gt 0 ]]; then")
+        script_content.append("    echo -e \"${RED}❌ $error_count Fehler aufgetreten${NC}\"")
+        script_content.append("    exit 1")
+        script_content.append("else")
+        script_content.append("    echo -e \"${GREEN}🎉 Alle Dateien erfolgreich organisiert!${NC}\"")
+        script_content.append("fi")
+        
+        # Speichere alle Move-Kommandos für interne Verwendung
+        self.move_commands = all_moves
+        
+        # Script in Datei schreiben
+        try:
+            with open(self.script_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(script_content))
+            
+            # Script ausführbar machen
+            import stat
+            self.script_path.chmod(self.script_path.stat().st_mode | stat.S_IEXEC)
+            
+            print(f"\n🎯 Shell-Script erstellt: {self.script_path}")
+            print(f"   📊 {len(all_moves)} Move-Operationen geplant")
+            print(f"   🔧 Ausführung mit: bash {self.script_path}")
+            print(f"   ⚠️  Das Script verschiebt die Dateien tatsächlich!")
+            
+        except Exception as e:
+            print(f"❌ Fehler beim Erstellen des Shell-Scripts: {e}")
     
     def get_exif_datetime(self, filepath: Path) -> Optional[datetime]:
         """Extrahiert Datum/Zeit aus EXIF-Daten"""
@@ -616,6 +763,14 @@ class PhotoOrganizer:
         """Organisiert die Fotos in die Zielstruktur"""
         events = self.group_photos_into_events()
         
+        # Shell-Script generieren falls gewünscht
+        if self.generate_script:
+            self.generate_shell_script(events)
+            if dry_run:
+                print(f"\n💡 Dry-Run abgeschlossen. Verwende das generierte Script:")
+                print(f"   bash {self.script_path}")
+                return
+        
         if dry_run:
             print("\n=== DRY RUN - Keine Dateien werden verschoben ===")
         else:
@@ -677,6 +832,8 @@ def main():
     parser.add_argument('--min-event-photos', type=int, default=10, help='Min. Fotos für Event (default: 10)')
     parser.add_argument('--no-geocoding', action='store_true', help='Deaktiviert Reverse-Geocoding für Ortsnamen')
     parser.add_argument('--max-workers', type=int, default=None, help='Anzahl paralleler Threads (default: auto)')
+    parser.add_argument('--generate-script', action='store_true', help='Erzeugt Shell-Script für spätere Ausführung')
+    parser.add_argument('--script-path', default='photo_move_script.sh', help='Pfad für Shell-Script (default: photo_move_script.sh)')
     
     args = parser.parse_args()
     
@@ -687,7 +844,10 @@ def main():
         event_max_days=args.event_max_days,
         geo_radius_km=args.geo_radius,
         min_event_photos=args.min_event_photos,
-        use_geocoding=not args.no_geocoding
+        use_geocoding=not args.no_geocoding,
+        max_workers=args.max_workers,
+        generate_script=args.generate_script,
+        script_path=args.script_path
     )
     
     # Fotos scannen
@@ -703,8 +863,9 @@ def main():
     # Organisation durchführen
     organizer.organize_photos(dry_run=not args.execute)
     
-    if not args.execute:
+    if not args.execute and not args.generate_script:
         print("\n💡 Verwende --execute um die Dateien tatsächlich zu verschieben")
+        print("💡 Verwende --generate-script um ein Shell-Script zu erstellen")
 
 if __name__ == "__main__":
     main()

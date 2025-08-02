@@ -14,6 +14,9 @@ from typing import Dict, List, Tuple, Optional, Set
 from dataclasses import dataclass
 from collections import defaultdict
 import math
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import queue
 
 try:
     from PIL import Image
@@ -56,7 +59,8 @@ class PhotoOrganizer:
                  event_max_days: int = 3,
                  geo_radius_km: float = 10.0,
                  min_event_photos: int = 10,
-                 use_geocoding: bool = True):
+                 use_geocoding: bool = True,
+                 max_workers: int = None):
         """
         Initialisiert den Photo Organizer
         
@@ -68,6 +72,7 @@ class PhotoOrganizer:
             geo_radius_km: GPS-Radius in km für Event-Zugehörigkeit
             min_event_photos: Mindestanzahl Fotos für Event-Erstellung
             use_geocoding: Aktiviert Reverse-Geocoding für Ortsnamen
+            max_workers: Anzahl paralleler Threads (None = auto)
         """
         self.source_dir = Path(source_dir)
         self.target_dir = Path(target_dir)
@@ -76,13 +81,21 @@ class PhotoOrganizer:
         self.geo_radius_km = geo_radius_km
         self.min_event_photos = min_event_photos
         self.use_geocoding = use_geocoding and GEOCODING_AVAILABLE
+        self.max_workers = max_workers or min(32, (os.cpu_count() or 1) + 4)
         
         self.supported_extensions = {'.jpg', '.jpeg', '.png', '.tiff', '.tif', '.mov', '.mp4', '.avi', '.vid'}
         self.video_extensions = {'.mov', '.mp4', '.avi', '.vid'}
         
         self.photos: List[PhotoInfo] = []
         self.duplicates: Set[str] = set()
-        self.location_cache: Dict[Tuple[float, float], str] = {}  # GPS -> Ortsname Cache
+        
+        # Thread-sichere Caches
+        self.location_cache: Dict[Tuple[float, float], str] = {}
+        self.location_cache_lock = threading.Lock()
+        self.hash_cache: Dict[str, str] = {}
+        self.hash_cache_lock = threading.Lock()
+        
+        print(f"Initialisiert mit {self.max_workers} parallelen Threads")
         
     def get_file_hash(self, filepath: Path) -> str:
         """Berechnet SHA-256 Hash einer Datei für Duplikat-Erkennung"""
@@ -254,14 +267,17 @@ class PhotoOrganizer:
         return c * r
     
     def get_location_name(self, coords: Tuple[float, float]) -> Optional[str]:
-        """Konvertiert GPS-Koordinaten zu Ortsnamen via Reverse-Geocoding"""
+        """Konvertiert GPS-Koordinaten zu Ortsnamen via Reverse-Geocoding (Thread-sicher)"""
         if not self.use_geocoding:
             return None
             
         # Cache prüfen (gerundet auf ~100m Genauigkeit)
         rounded_coords = (round(coords[0], 3), round(coords[1], 3))
-        if rounded_coords in self.location_cache:
-            return self.location_cache[rounded_coords]
+        
+        # Thread-sicherer Cache-Zugriff
+        with self.location_cache_lock:
+            if rounded_coords in self.location_cache:
+                return self.location_cache[rounded_coords]
         
         try:
             # Nominatim (OpenStreetMap) API - kostenlos, aber mit Rate-Limiting
@@ -282,7 +298,7 @@ class PhotoOrganizer:
             response.raise_for_status()
             data = response.json()
             
-            # Rate-Limiting respektieren
+            # Rate-Limiting respektieren (thread-sicher)
             time.sleep(1.1)  # Nominatim: max 1 request/second
             
             if 'address' in data:
@@ -304,7 +320,10 @@ class PhotoOrganizer:
                     if location:
                         # Sonderzeichen für Dateinamen bereinigen
                         clean_location = self.clean_location_name(location)
-                        self.location_cache[rounded_coords] = clean_location
+                        
+                        # Thread-sicher in Cache speichern
+                        with self.location_cache_lock:
+                            self.location_cache[rounded_coords] = clean_location
                         return clean_location
             
         except requests.RequestException as e:
@@ -312,8 +331,9 @@ class PhotoOrganizer:
         except Exception as e:
             print(f"Unerwarteter Geocoding-Fehler für {coords}: {e}")
         
-        # Fallback: Cache leeren Eintrag setzen
-        self.location_cache[rounded_coords] = None
+        # Fallback: Cache leeren Eintrag setzen (thread-sicher)
+        with self.location_cache_lock:
+            self.location_cache[rounded_coords] = None
         return None
     
     def clean_location_name(self, location: str) -> str:
@@ -339,50 +359,103 @@ class PhotoOrganizer:
         
         return location[:30]  # Max. 30 Zeichen für Ordnernamen
     
+    def process_single_file(self, filepath: Path) -> Optional[PhotoInfo]:
+        """Verarbeitet eine einzelne Datei (für parallele Ausführung)"""
+        try:
+            # Hash für Duplikat-Erkennung
+            file_hash = self.get_file_hash(filepath)
+            
+            # Thread-sicherer Hash-Cache-Zugriff
+            with self.hash_cache_lock:
+                if file_hash in self.hash_cache:
+                    # Duplikat gefunden
+                    return None
+                self.hash_cache[file_hash] = str(filepath)
+            
+            # Zeitstempel extrahieren (Priorität: EXIF > Dateiname > Datei-Zeit)
+            photo_datetime = self.get_best_datetime(filepath)
+            
+            # GPS-Koordinaten extrahieren
+            gps_coords = self.get_gps_coords(filepath)
+            location_name = None
+            
+            if gps_coords and self.use_geocoding:
+                location_name = self.get_location_name(gps_coords)
+            
+            return PhotoInfo(
+                filepath=filepath,
+                datetime=photo_datetime,
+                gps_coords=gps_coords,
+                location_name=location_name,
+                file_hash=file_hash,
+                file_size=filepath.stat().st_size,
+                is_video=filepath.suffix.lower() in self.video_extensions
+            )
+            
+        except Exception as e:
+            print(f"❌ Fehler bei der Verarbeitung von {filepath}: {e}")
+            return None
+    
     def scan_photos(self) -> None:
-        """Scannt alle Fotos im Quellverzeichnis"""
-        print(f"Scanne Fotos in: {self.source_dir}")
+        """Scannt alle Fotos im Quellverzeichnis mit paralleler Verarbeitung"""
+        print(f"🔍 Scanne Fotos in: {self.source_dir}")
         
-        file_hashes = {}
-        
+        # Sammle alle zu verarbeitenden Dateien
+        all_files = []
         for filepath in self.source_dir.rglob('*'):
             if filepath.is_file() and filepath.suffix.lower() in self.supported_extensions:
-                print(f"Verarbeite: {filepath.name}")
-                
-                # Hash für Duplikat-Erkennung
-                file_hash = self.get_file_hash(filepath)
-                if file_hash in file_hashes:
-                    print(f"Duplikat gefunden: {filepath.name} -> {file_hashes[file_hash]}")
-                    self.duplicates.add(str(filepath))
-                    continue
-                file_hashes[file_hash] = str(filepath)
-                
-                # Zeitstempel extrahieren (Priorität: EXIF > Dateiname > Datei-Zeit)
-                photo_datetime = self.get_best_datetime(filepath)
-                
-                # GPS-Koordinaten extrahieren
-                gps_coords = self.get_gps_coords(filepath)
-                location_name = None
-                if gps_coords:
-                    print(f"  GPS: {gps_coords[0]:.6f}, {gps_coords[1]:.6f}")
-                    if self.use_geocoding:
-                        location_name = self.get_location_name(gps_coords)
-                        if location_name:
-                            print(f"  Ort: {location_name}")
-                
-                photo_info = PhotoInfo(
-                    filepath=filepath,
-                    datetime=photo_datetime,
-                    gps_coords=gps_coords,
-                    location_name=location_name,
-                    file_hash=file_hash,
-                    file_size=filepath.stat().st_size,
-                    is_video=filepath.suffix.lower() in self.video_extensions
-                )
-                
-                self.photos.append(photo_info)
+                all_files.append(filepath)
         
-        print(f"Gefunden: {len(self.photos)} Fotos/Videos, {len(self.duplicates)} Duplikate")
+        print(f"📁 Gefunden: {len(all_files)} Dateien zum Verarbeiten")
+        print(f"🚀 Starte parallele Verarbeitung mit {self.max_workers} Threads...")
+        
+        # Progress tracking
+        processed_count = 0
+        duplicates_count = 0
+        
+        # Parallele Verarbeitung mit ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            # Alle Tasks starten
+            future_to_filepath = {
+                executor.submit(self.process_single_file, filepath): filepath 
+                for filepath in all_files
+            }
+            
+            # Ergebnisse sammeln
+            for future in as_completed(future_to_filepath):
+                filepath = future_to_filepath[future]
+                processed_count += 1
+                
+                # Progress anzeigen (alle 100 Dateien)
+                if processed_count % 100 == 0 or processed_count == len(all_files):
+                    progress = (processed_count / len(all_files)) * 100
+                    print(f"📊 Progress: {processed_count}/{len(all_files)} ({progress:.1f}%)")
+                
+                try:
+                    photo_info = future.result()
+                    if photo_info is None:
+                        # Duplikat
+                        duplicates_count += 1
+                        self.duplicates.add(str(filepath))
+                    else:
+                        self.photos.append(photo_info)
+                        
+                        # Kurze Info für wichtige Dateien
+                        if photo_info.gps_coords and photo_info.location_name:
+                            print(f"  📍 {filepath.name}: {photo_info.location_name}")
+                        
+                except Exception as e:
+                    print(f"❌ Fehler bei {filepath}: {e}")
+        
+        print(f"\n✅ Verarbeitung abgeschlossen:")
+        print(f"  📸 {len(self.photos)} Fotos/Videos erfolgreich verarbeitet")
+        print(f"  🗑️  {duplicates_count} Duplikate gefunden")
+        print(f"  🌍 {len([p for p in self.photos if p.gps_coords])} Fotos mit GPS-Daten")
+        print(f"  📍 {len([p for p in self.photos if p.location_name])} Fotos mit Ortsinformation")
+        
+        if self.use_geocoding:
+            with self.location_cache_lock:
+                print(f"  🗺️  {len(self.location_cache)} Orte im Cache gespeichert")
     
     def group_photos_into_events(self) -> Dict[str, List[PhotoInfo]]:
         """Gruppiert Fotos in Events basierend auf Zeit und Ort"""
@@ -603,6 +676,7 @@ def main():
     parser.add_argument('--geo-radius', type=float, default=10.0, help='GPS-Radius in km (default: 10.0)')
     parser.add_argument('--min-event-photos', type=int, default=10, help='Min. Fotos für Event (default: 10)')
     parser.add_argument('--no-geocoding', action='store_true', help='Deaktiviert Reverse-Geocoding für Ortsnamen')
+    parser.add_argument('--max-workers', type=int, default=None, help='Anzahl paralleler Threads (default: auto)')
     
     args = parser.parse_args()
     

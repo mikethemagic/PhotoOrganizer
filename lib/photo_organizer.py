@@ -96,6 +96,55 @@ class PhotoOrganizer:
             print(f"Fehler beim Hash-Berechnen für {filepath}: {e}")
             return ""
     
+    def get_datetime_from_filename(self, filepath: Path) -> Optional[datetime]:
+        """Extrahiert Datum/Zeit aus Dateinamen (verschiedene Formate)"""
+        import re
+        
+        filename = filepath.stem  # Dateiname ohne Erweiterung
+        
+        # Verschiedene Dateinamen-Muster (häufigste zuerst)
+        patterns = [
+            # YYYY-MM-DD HH.MM.SS oder YYYY-MM-DD HH-MM-SS
+            r'(\d{4})-(\d{2})-(\d{2})\s+(\d{2})[\.\-:](\d{2})[\.\-:](\d{2})',
+            # YYYY-MM-DD_HH.MM.SS oder YYYY-MM-DD_HH-MM-SS
+            r'(\d{4})-(\d{2})-(\d{2})_(\d{2})[\.\-:](\d{2})[\.\-:](\d{2})',
+            # YYYYMMDD_HHMMSS
+            r'(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})',
+            # YYYY-MM-DD (nur Datum, Zeit wird auf 12:00:00 gesetzt)
+            r'(\d{4})-(\d{2})-(\d{2})',
+            # YYYYMMDD (nur Datum)
+            r'(\d{4})(\d{2})(\d{2})',
+            # IMG_YYYYMMDD_HHMMSS (typisch für Kameras)
+            r'IMG_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})',
+            # WhatsApp Format: IMG-YYYYMMDD-WAXXXX
+            r'IMG-(\d{4})(\d{2})(\d{2})-WA\d+',
+            # Signal Format: signal-YYYY-MM-DD-HHMMSS
+            r'signal-(\d{4})-(\d{2})-(\d{2})-(\d{2})(\d{2})(\d{2})',
+            # Screenshot Format: Screenshot_YYYY-MM-DD-HH-MM-SS
+            r'Screenshot_(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})',
+            # Allgemeines Muster: beliebiger Text + YYYYMMDD
+            r'.*(\d{4})(\d{2})(\d{2}).*',
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, filename)
+            if match:
+                groups = match.groups()
+                try:
+                    if len(groups) == 6:  # Vollständiges Datum + Zeit
+                        year, month, day, hour, minute, second = map(int, groups)
+                        return datetime(year, month, day, hour, minute, second)
+                    elif len(groups) == 3:  # Nur Datum
+                        year, month, day = map(int, groups)
+                        return datetime(year, month, day, 12, 0, 0)  # Mittag als Standard
+                    elif len(groups) == 2:  # Spezielle Formate
+                        continue
+                except ValueError as e:
+                    print(f"  Ungültiges Datum im Dateinamen {filename}: {e}")
+                    continue
+        
+        return None
+    
     def get_exif_datetime(self, filepath: Path) -> Optional[datetime]:
         """Extrahiert Datum/Zeit aus EXIF-Daten"""
         try:
@@ -115,6 +164,25 @@ class PhotoOrganizer:
         except Exception as e:
             print(f"EXIF-Fehler bei {filepath}: {e}")
         return None
+    
+    def get_best_datetime(self, filepath: Path) -> datetime:
+        """Bestimmt den besten Zeitstempel in der Prioritätsreihenfolge: EXIF > Dateiname > Datei-Zeit"""
+        # 1. Priorität: EXIF-Daten
+        exif_datetime = self.get_exif_datetime(filepath)
+        if exif_datetime:
+            print(f"  ✅ EXIF-Datum: {exif_datetime}")
+            return exif_datetime
+        
+        # 2. Priorität: Dateiname
+        filename_datetime = self.get_datetime_from_filename(filepath)
+        if filename_datetime:
+            print(f"  📝 Dateiname-Datum: {filename_datetime}")
+            return filename_datetime
+        
+        # 3. Priorität: Datei-Modifikationszeit
+        file_datetime = datetime.fromtimestamp(filepath.stat().st_mtime)
+        print(f"  📁 Datei-Zeit: {file_datetime}")
+        return file_datetime
     
     def get_video_datetime(self, filepath: Path) -> Optional[datetime]:
         """Extrahiert Datum/Zeit aus Video-Metadaten mit ffprobe"""
@@ -289,12 +357,8 @@ class PhotoOrganizer:
                     continue
                 file_hashes[file_hash] = str(filepath)
                 
-                # Zeitstempel extrahieren
-                photo_datetime = self.get_exif_datetime(filepath)
-                if not photo_datetime:
-                    # Fallback auf Datei-Modifikationszeit
-                    photo_datetime = datetime.fromtimestamp(filepath.stat().st_mtime)
-                    print(f"  Kein EXIF-Datum, verwende Datei-Zeit: {photo_datetime}")
+                # Zeitstempel extrahieren (Priorität: EXIF > Dateiname > Datei-Zeit)
+                photo_datetime = self.get_best_datetime(filepath)
                 
                 # GPS-Koordinaten extrahieren
                 gps_coords = self.get_gps_coords(filepath)

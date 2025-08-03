@@ -40,6 +40,13 @@ except ImportError:
     GEOCODING_AVAILABLE = False
     print("Warnung: requests nicht verfügbar. Installiere mit: pip install requests")
 
+try:
+    import configparser
+    CONFIG_AVAILABLE = True
+except ImportError:
+    CONFIG_AVAILABLE = False
+    print("Warnung: configparser nicht verfügbar.")
+
 @dataclass
 class PhotoInfo:
     """Informationen über ein Foto/Video"""
@@ -62,7 +69,7 @@ class PhotoOrganizer:
                  use_geocoding: bool = True,
                  max_workers: int = None,
                  generate_script: bool = False,
-                 script_path: str = "photo_move_script.sh",
+                 script_path: str = None,
                  cache_file: Optional[str] = None):
         """
         Initialisiert den Photo Organizer
@@ -77,8 +84,8 @@ class PhotoOrganizer:
             use_geocoding: Aktiviert Reverse-Geocoding für Ortsnamen
             max_workers: Anzahl paralleler Threads (None = auto)
             generate_script: Erzeugt Shell-Script für spätere Ausführung
-            script_path: Pfad für das Shell-Script
-            cache_file: JSON-Cache-Datei für Photo-Daten und Geocoding
+            script_path: Pfad für das Shell-Script (None = auto mit PROJECT_SCRIPTS)
+            cache_file: JSON-Cache-Datei für Photo-Daten und Geocoding (None = auto mit PROJECT_CACHE)
         """
         self.source_dir = Path(source_dir)
         self.target_dir = Path(target_dir)
@@ -89,7 +96,15 @@ class PhotoOrganizer:
         self.use_geocoding = use_geocoding and GEOCODING_AVAILABLE
         self.max_workers = max_workers or min(32, (os.cpu_count() or 1) + 4)
         self.generate_script = generate_script
+        
+        # Auto-generiere Script-Pfad falls nicht angegeben
+        if script_path is None:
+            script_path = self.generate_script_path()
         self.script_path = Path(script_path)
+        
+        # Auto-generiere Cache-Dateinamen falls nicht angegeben
+        if cache_file is None:
+            cache_file = self.generate_cache_filename()
         self.cache_file = Path(cache_file) if cache_file else None
         
         self.supported_extensions = {'.jpg', '.jpeg', '.png', '.tiff', '.tif', '.mov', '.mp4', '.avi', '.vid'}
@@ -107,30 +122,19 @@ class PhotoOrganizer:
         # Shell-Script Sammlung
         self.move_commands: List[Tuple[Path, Path]] = []  # (source, target)
         
+        # Lade Dateinamen-Pattern aus Konfiguration
+        self.filename_patterns = self.load_filename_patterns()
+        
         print(f"Initialisiert mit {self.max_workers} parallelen Threads")
         if self.cache_file:
             print(f"Cache-Datei: {self.cache_file}")
-        
-    def get_file_hash(self, filepath: Path) -> str:
-        """Berechnet SHA-256 Hash einer Datei für Duplikat-Erkennung"""
-        hash_sha256 = hashlib.sha256()
-        try:
-            with open(filepath, "rb") as f:
-                for chunk in iter(lambda: f.read(4096), b""):
-                    hash_sha256.update(chunk)
-            return hash_sha256.hexdigest()
-        except Exception as e:
-            print(f"Fehler beim Hash-Berechnen für {filepath}: {e}")
-            return ""
+        if self.generate_script:
+            print(f"Script-Datei: {self.script_path}")
     
-    def get_datetime_from_filename(self, filepath: Path) -> Optional[datetime]:
-        """Extrahiert Datum/Zeit aus Dateinamen (verschiedene Formate)"""
-        import re
-        
-        filename = filepath.stem  # Dateiname ohne Erweiterung
-        
-        # Verschiedene Dateinamen-Muster (häufigste zuerst)
-        patterns = [
+    def load_filename_patterns(self) -> List[str]:
+        """Lädt Dateinamen-Pattern aus Konfigurationsdatei"""
+        # Default-Pattern falls Config nicht verfügbar
+        default_patterns = [
             # YYYY-MM-DD HH.MM.SS oder YYYY-MM-DD HH-MM-SS
             r'(\d{4})-(\d{2})-(\d{2})\s+(\d{2})[\.\-:](\d{2})[\.\-:](\d{2})',
             # YYYY-MM-DD_HH.MM.SS oder YYYY-MM-DD_HH-MM-SS
@@ -153,7 +157,167 @@ class PhotoOrganizer:
             r'.*(\d{4})(\d{2})(\d{2}).*',
         ]
         
-        for pattern in patterns:
+        project_cfg = os.environ.get('PROJECT_CFG')
+        if not project_cfg:
+            print("🔧 PROJECT_CFG nicht gesetzt, verwende Default-Pattern")
+            return default_patterns
+        
+        config_dir = Path(project_cfg)
+        config_file = config_dir / "photo_organizer.cfg"
+        
+        if not config_file.exists():
+            # Erstelle Standard-Konfigurationsdatei
+            self.create_default_config(config_file)
+            print(f"🔧 Standard-Config erstellt: {config_file}")
+        
+        try:
+            config = configparser.ConfigParser()
+            config.read(config_file, encoding='utf-8')
+            
+            if 'Filename_Patterns' in config:
+                patterns = []
+                for key, pattern in config['Filename_Patterns'].items():
+                    if pattern.strip():  # Überspringe leere Pattern
+                        patterns.append(pattern.strip())
+                
+                if patterns:
+                    print(f"🔧 {len(patterns)} Pattern aus Config geladen: {config_file}")
+                    return patterns
+                    
+        except Exception as e:
+            print(f"⚠️  Fehler beim Laden der Config: {e}")
+        
+        print("🔧 Verwende Default-Pattern")
+        return default_patterns
+    
+    def create_default_config(self, config_file: Path) -> None:
+        """Erstellt Standard-Konfigurationsdatei"""
+        config_dir = config_file.parent
+        config_dir.mkdir(parents=True, exist_ok=True)
+        
+        config_content = """# PhotoOrganizer Konfigurationsdatei
+# 
+# Diese Datei enthält Regex-Pattern für die Erkennung von Datum/Zeit in Dateinamen
+# Format: pattern_name = regex_pattern
+# 
+# Regex-Gruppen:
+# - 6 Gruppen: Jahr, Monat, Tag, Stunde, Minute, Sekunde
+# - 3 Gruppen: Jahr, Monat, Tag (Zeit wird auf 12:00:00 gesetzt)
+
+[Filename_Patterns]
+
+# Standard-Formate mit Datum und Zeit
+datetime_space = (\\d{4})-(\\d{2})-(\\d{2})\\s+(\\d{2})[\\.-:](\\d{2})[\\.-:](\\d{2})
+datetime_underscore = (\\d{4})-(\\d{2})-(\\d{2})_(\\d{2})[\\.-:](\\d{2})[\\.-:](\\d{2})
+compact_datetime = (\\d{4})(\\d{2})(\\d{2})_(\\d{2})(\\d{2})(\\d{2})
+
+# Nur Datum (Zeit wird auf 12:00:00 gesetzt)
+date_dashes = (\\d{4})-(\\d{2})-(\\d{2})
+date_compact = (\\d{4})(\\d{2})(\\d{2})
+
+# Kamera-/App-spezifische Formate
+img_camera = IMG_(\\d{4})(\\d{2})(\\d{2})_(\\d{2})(\\d{2})(\\d{2})
+whatsapp = IMG-(\\d{4})(\\d{2})(\\d{2})-WA\\d+
+signal = signal-(\\d{4})-(\\d{2})-(\\d{2})-(\\d{2})(\\d{2})(\\d{2})
+screenshot = Screenshot_(\\d{4})-(\\d{2})-(\\d{2})-(\\d{2})-(\\d{2})-(\\d{2})
+
+# Fallback: beliebiger Text + Datum
+fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
+
+# Eigene Pattern können hier hinzugefügt werden:
+# mein_format = (\\d{4})\\.(\\d{2})\\.(\\d{2})_(\\d{2})h(\\d{2})m(\\d{2})s
+"""
+        
+        try:
+            with open(config_file, 'w', encoding='utf-8') as f:
+                f.write(config_content)
+        except Exception as e:
+            print(f"❌ Fehler beim Erstellen der Config: {e}")
+    
+    def generate_script_path(self) -> str:
+        """Generiert automatischen Script-Pfad mit PROJECT_SCRIPTS falls verfügbar"""
+        # Prüfe PROJECT_SCRIPTS Umgebungsvariable
+        project_scripts = os.environ.get('PROJECT_SCRIPTS')
+        
+        if project_scripts:
+            scripts_dir = Path(project_scripts)
+            # Erstelle Verzeichnis falls es nicht existiert
+            scripts_dir.mkdir(parents=True, exist_ok=True)
+            script_filename = f"photo_move_{self.get_timestamp()}.sh"
+            script_path = scripts_dir / script_filename
+            print(f"🔧 Verwende PROJECT_SCRIPTS: {script_path}")
+            return str(script_path)
+        else:
+            # Fallback auf aktuelles Verzeichnis
+            print(f"🔧 PROJECT_SCRIPTS nicht gesetzt, verwende aktuelles Verzeichnis")
+            return "photo_move_script.sh"
+    
+    def generate_cache_filename(self) -> str:
+        """Generiert automatischen Cache-Dateinamen mit PROJECT_CACHE falls verfügbar"""
+        # Prüfe PROJECT_CACHE Umgebungsvariable
+        project_cache = os.environ.get('PROJECT_CACHE')
+        
+        # Normalisiere Pfad (absoluter Pfad, aufgelöste Symlinks)
+        source_abs = self.source_dir.resolve()
+        
+        # SHA-256 Hash nur vom Quellverzeichnis erstellen
+        path_string = str(source_abs)
+        hash_object = hashlib.sha256(path_string.encode('utf-8'))
+        path_hash = hash_object.hexdigest()[:12]  # Erste 12 Zeichen für Kompaktheit
+        
+        # Lesbaren Cache-Namen erstellen
+        source_name = source_abs.name or "root"
+        source_clean = self.clean_filename(source_name)
+        
+        cache_filename = f"photo_cache_{source_clean}_{path_hash}.json"
+        
+        if project_cache:
+            cache_dir = Path(project_cache)
+            # Erstelle Verzeichnis falls es nicht existiert
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            cache_path = cache_dir / cache_filename
+            print(f"🔧 Verwende PROJECT_CACHE: {cache_path}")
+            return str(cache_path)
+        else:
+            # Fallback auf aktuelles Verzeichnis
+            print(f"🔧 PROJECT_CACHE nicht gesetzt, verwende aktuelles Verzeichnis")
+            print(f"🔧 Auto-Cache-Name: {cache_filename}")
+            return cache_filename
+    
+    def get_timestamp(self) -> str:
+        """Generiert Zeitstempel für eindeutige Script-Namen"""
+        return datetime.now().strftime('%Y%m%d_%H%M%S')
+    
+    def clean_filename(self, name: str) -> str:
+        """Bereinigt String für Verwendung in Dateinamen"""
+        import re
+        # Nur alphanumerische Zeichen, Unterstriche und Bindestriche
+        cleaned = re.sub(r'[^\w\-_]', '_', name)
+        # Mehrfache Unterstriche reduzieren
+        cleaned = re.sub(r'_+', '_', cleaned)
+        # Auf sinnvolle Länge kürzen
+        return cleaned[:20]
+        
+    def get_file_hash(self, filepath: Path) -> str:
+        """Berechnet SHA-256 Hash einer Datei für Duplikat-Erkennung"""
+        hash_sha256 = hashlib.sha256()
+        try:
+            with open(filepath, "rb") as f:
+                for chunk in iter(lambda: f.read(4096), b""):
+                    hash_sha256.update(chunk)
+            return hash_sha256.hexdigest()
+        except Exception as e:
+            print(f"Fehler beim Hash-Berechnen für {filepath}: {e}")
+            return ""
+    
+    def get_datetime_from_filename(self, filepath: Path) -> Optional[datetime]:
+        """Extrahiert Datum/Zeit aus Dateinamen (Pattern aus Konfiguration)"""
+        import re
+        
+        filename = filepath.stem  # Dateiname ohne Erweiterung
+        
+        # Verwende Pattern aus Konfiguration
+        for pattern in self.filename_patterns:
             match = re.search(pattern, filename)
             if match:
                 groups = match.groups()
@@ -564,6 +728,8 @@ class PhotoOrganizer:
     def load_cache(self) -> bool:
         """Lädt Photo-Daten aus JSON-Cache"""
         if not self.cache_file or not self.cache_file.exists():
+            if self.cache_file:
+                print(f"📂 Cache-Datei nicht gefunden: {self.cache_file}")
             return False
             
         try:
@@ -575,10 +741,16 @@ class PhotoOrganizer:
             # Metadata prüfen
             metadata = cache_data.get('metadata', {})
             cached_source = metadata.get('source_dir')
+            cached_target = metadata.get('target_dir')
+            
+            # Validiere Cache-Kompatibilität
             if cached_source != str(self.source_dir):
                 print(f"⚠️  Cache-Warnung: Quellverzeichnis unterschiedlich")
                 print(f"   Cache: {cached_source}")
                 print(f"   Aktuell: {self.source_dir}")
+                print(f"   Cache wird trotzdem verwendet (nur bei identischen Inhalten sinnvoll)")
+            
+            # Zielverzeichnis wird nicht validiert (irrelevant für Cache)
             
             # Photo-Daten laden
             self.photos = []
@@ -612,8 +784,11 @@ class PhotoOrganizer:
                     except Exception as e:
                         print(f"⚠️  Fehler beim Laden von GPS-Cache: {e}")
             
-            print(f"✅ Cache geladen: {len(self.photos)} Fotos, {len(self.duplicates)} Duplikate")
-            print(f"   🗺️  {len(self.location_cache)} Orte im GPS-Cache")
+            cache_created = metadata.get('created', 'unbekannt')
+            print(f"✅ Cache geladen (erstellt: {cache_created}):")
+            print(f"  📸 {len(self.photos)} Fotos/Videos")
+            print(f"  🗑️  {len(self.duplicates)} Duplikate") 
+            print(f"  🗺️  {len(self.location_cache)} Orte im GPS-Cache")
             return True
             
         except Exception as e:
@@ -1030,8 +1205,8 @@ def main():
     parser.add_argument('--no-geocoding', action='store_true', help='Deaktiviert Reverse-Geocoding für Ortsnamen')
     parser.add_argument('--max-workers', type=int, default=None, help='Anzahl paralleler Threads (default: auto)')
     parser.add_argument('--generate-script', action='store_true', help='Erzeugt Shell-Script für spätere Ausführung')
-    parser.add_argument('--script-path', default='photo_move_script.sh', help='Pfad für Shell-Script (default: photo_move_script.sh)')
-    parser.add_argument('--cache', help='JSON-Cache-Datei für Photo-Daten (z.B. --cache=photos.json)')
+    parser.add_argument('--script-path', default=None, help='Pfad für Shell-Script (default: auto mit PROJECT_SCRIPTS)')
+    parser.add_argument('--cache', help='JSON-Cache-Datei für Photo-Daten (default: auto mit PROJECT_CACHE)')
     
     args = parser.parse_args()
     

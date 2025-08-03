@@ -62,7 +62,8 @@ class PhotoOrganizer:
                  use_geocoding: bool = True,
                  max_workers: int = None,
                  generate_script: bool = False,
-                 script_path: str = "photo_move_script.sh"):
+                 script_path: str = "photo_move_script.sh",
+                 cache_file: Optional[str] = None):
         """
         Initialisiert den Photo Organizer
         
@@ -77,6 +78,7 @@ class PhotoOrganizer:
             max_workers: Anzahl paralleler Threads (None = auto)
             generate_script: Erzeugt Shell-Script für spätere Ausführung
             script_path: Pfad für das Shell-Script
+            cache_file: JSON-Cache-Datei für Photo-Daten und Geocoding
         """
         self.source_dir = Path(source_dir)
         self.target_dir = Path(target_dir)
@@ -88,6 +90,7 @@ class PhotoOrganizer:
         self.max_workers = max_workers or min(32, (os.cpu_count() or 1) + 4)
         self.generate_script = generate_script
         self.script_path = Path(script_path)
+        self.cache_file = Path(cache_file) if cache_file else None
         
         self.supported_extensions = {'.jpg', '.jpeg', '.png', '.tiff', '.tif', '.mov', '.mp4', '.avi', '.vid'}
         self.video_extensions = {'.mov', '.mp4', '.avi', '.vid'}
@@ -105,6 +108,8 @@ class PhotoOrganizer:
         self.move_commands: List[Tuple[Path, Path]] = []  # (source, target)
         
         print(f"Initialisiert mit {self.max_workers} parallelen Threads")
+        if self.cache_file:
+            print(f"Cache-Datei: {self.cache_file}")
         
     def get_file_hash(self, filepath: Path) -> str:
         """Berechnet SHA-256 Hash einer Datei für Duplikat-Erkennung"""
@@ -252,10 +257,16 @@ class PhotoOrganizer:
         all_moves = []
         
         for event_name, photos in events.items():
-            target_folder = self.target_dir / event_name
-            
-            script_content.append(f"# 📁 {event_name}/ ({len(photos)} Dateien)")
-            script_content.append(f"echo -e \"${{BLUE}}📁 {event_name}/ ({len(photos)} Dateien)${{NC}}\"")
+            if event_name == ".":
+                # Einzelne Dateien direkt ins Zielverzeichnis
+                target_folder = self.target_dir
+                script_content.append(f"# 📄 Einzelne Dateien (Zielverzeichnis) - {len(photos)} Dateien")
+                script_content.append(f"echo -e \"${{BLUE}}📄 Einzelne Dateien (Zielverzeichnis) - {len(photos)} Dateien${{NC}}\"")
+            else:
+                # Event-Ordner
+                target_folder = self.target_dir / event_name
+                script_content.append(f"# 📁 {event_name}/ ({len(photos)} Dateien)")
+                script_content.append(f"echo -e \"${{BLUE}}📁 {event_name}/ ({len(photos)} Dateien)${{NC}}\"")
             
             for photo in photos:
                 target_path = target_folder / photo.filepath.name
@@ -506,8 +517,165 @@ class PhotoOrganizer:
         
         return location[:30]  # Max. 30 Zeichen für Ordnernamen
     
+    def save_cache(self) -> None:
+        """Speichert Photo-Daten in JSON-Cache"""
+        if not self.cache_file:
+            return
+            
+        cache_data = {
+            'metadata': {
+                'created': datetime.now().isoformat(),
+                'source_dir': str(self.source_dir),
+                'target_dir': str(self.target_dir),
+                'total_photos': len(self.photos),
+                'duplicates_count': len(self.duplicates)
+            },
+            'photos': [],
+            'duplicates': list(self.duplicates),
+            'location_cache': {}
+        }
+        
+        # Photo-Daten serialisieren
+        for photo in self.photos:
+            photo_data = {
+                'filepath': str(photo.filepath),
+                'datetime': photo.datetime.isoformat(),
+                'gps_coords': photo.gps_coords,
+                'location_name': photo.location_name,
+                'file_hash': photo.file_hash,
+                'file_size': photo.file_size,
+                'is_video': photo.is_video
+            }
+            cache_data['photos'].append(photo_data)
+        
+        # Location-Cache serialisieren
+        with self.location_cache_lock:
+            for coords, location in self.location_cache.items():
+                key = f"{coords[0]:.3f},{coords[1]:.3f}"
+                cache_data['location_cache'][key] = location
+        
+        try:
+            with open(self.cache_file, 'w', encoding='utf-8') as f:
+                json.dump(cache_data, f, indent=2, ensure_ascii=False)
+            print(f"💾 Cache gespeichert: {self.cache_file}")
+        except Exception as e:
+            print(f"❌ Fehler beim Speichern des Caches: {e}")
+    
+    def load_cache(self) -> bool:
+        """Lädt Photo-Daten aus JSON-Cache"""
+        if not self.cache_file or not self.cache_file.exists():
+            return False
+            
+        try:
+            with open(self.cache_file, 'r', encoding='utf-8') as f:
+                cache_data = json.load(f)
+            
+            print(f"📂 Lade Cache: {self.cache_file}")
+            
+            # Metadata prüfen
+            metadata = cache_data.get('metadata', {})
+            cached_source = metadata.get('source_dir')
+            if cached_source != str(self.source_dir):
+                print(f"⚠️  Cache-Warnung: Quellverzeichnis unterschiedlich")
+                print(f"   Cache: {cached_source}")
+                print(f"   Aktuell: {self.source_dir}")
+            
+            # Photo-Daten laden
+            self.photos = []
+            for photo_data in cache_data.get('photos', []):
+                try:
+                    photo = PhotoInfo(
+                        filepath=Path(photo_data['filepath']),
+                        datetime=datetime.fromisoformat(photo_data['datetime']),
+                        gps_coords=tuple(photo_data['gps_coords']) if photo_data['gps_coords'] else None,
+                        location_name=photo_data.get('location_name'),
+                        file_hash=photo_data['file_hash'],
+                        file_size=photo_data['file_size'],
+                        is_video=photo_data['is_video']
+                    )
+                    self.photos.append(photo)
+                except Exception as e:
+                    print(f"⚠️  Fehler beim Laden von Photo-Daten: {e}")
+            
+            # Duplikate laden
+            self.duplicates = set(cache_data.get('duplicates', []))
+            
+            # Location-Cache laden
+            location_cache_data = cache_data.get('location_cache', {})
+            with self.location_cache_lock:
+                self.location_cache = {}
+                for coord_str, location in location_cache_data.items():
+                    try:
+                        lat_str, lon_str = coord_str.split(',')
+                        coords = (float(lat_str), float(lon_str))
+                        self.location_cache[coords] = location
+                    except Exception as e:
+                        print(f"⚠️  Fehler beim Laden von GPS-Cache: {e}")
+            
+            print(f"✅ Cache geladen: {len(self.photos)} Fotos, {len(self.duplicates)} Duplikate")
+            print(f"   🗺️  {len(self.location_cache)} Orte im GPS-Cache")
+            return True
+            
+        except Exception as e:
+            print(f"❌ Fehler beim Laden des Caches: {e}")
+            return False
+    
+    def post_process_geocoding(self) -> None:
+        """Führt Geocoding als separaten, sequenziellen Schritt durch"""
+        if not self.use_geocoding:
+            return
+            
+        # Sammle alle eindeutigen GPS-Koordinaten ohne Ortsname
+        coords_to_process = []
+        for photo in self.photos:
+            if photo.gps_coords and not photo.location_name:
+                rounded_coords = (round(photo.gps_coords[0], 3), round(photo.gps_coords[1], 3))
+                if rounded_coords not in coords_to_process:
+                    coords_to_process.append(rounded_coords)
+        
+        if not coords_to_process:
+            print("🌍 Alle GPS-Koordinaten haben bereits Ortsnamen")
+            return
+            
+        print(f"\n🌍 Starte sequenzielles Geocoding für {len(coords_to_process)} Orte...")
+        
+        processed_count = 0
+        for coords in coords_to_process:
+            processed_count += 1
+            print(f"📍 Geocoding {processed_count}/{len(coords_to_process)}: {coords[0]:.3f}, {coords[1]:.3f}")
+            
+            # Überspringe wenn bereits im Cache
+            with self.location_cache_lock:
+                if coords in self.location_cache:
+                    location = self.location_cache[coords]
+                    if location:
+                        print(f"   ✅ Aus Cache: {location}")
+                    else:
+                        print(f"   ❌ Bereits als nicht-verfügbar markiert")
+                    continue
+            
+            # Geocoding durchführen
+            location_name = self.get_location_name(coords)
+            if location_name:
+                print(f"   ✅ Gefunden: {location_name}")
+                
+                # Aktualisiere alle Fotos mit diesen Koordinaten
+                for photo in self.photos:
+                    if photo.gps_coords:
+                        photo_rounded = (round(photo.gps_coords[0], 3), round(photo.gps_coords[1], 3))
+                        if photo_rounded == coords:
+                            photo.location_name = location_name
+            else:
+                print(f"   ❌ Kein Ortsname gefunden")
+        
+        print(f"✅ Geocoding abgeschlossen")
+        
+        # Cache aktualisieren falls vorhanden
+        if self.cache_file:
+            self.save_cache()
+    
     def process_single_file(self, filepath: Path) -> Optional[PhotoInfo]:
-        """Verarbeitet eine einzelne Datei (für parallele Ausführung)"""
+        """Verarbeitet eine einzelne Datei (für parallele Ausführung) - OHNE Geocoding"""
         try:
             # Hash für Duplikat-Erkennung
             file_hash = self.get_file_hash(filepath)
@@ -522,18 +690,14 @@ class PhotoOrganizer:
             # Zeitstempel extrahieren (Priorität: EXIF > Dateiname > Datei-Zeit)
             photo_datetime = self.get_best_datetime(filepath)
             
-            # GPS-Koordinaten extrahieren
+            # GPS-Koordinaten extrahieren (OHNE Geocoding)
             gps_coords = self.get_gps_coords(filepath)
-            location_name = None
-            
-            if gps_coords and self.use_geocoding:
-                location_name = self.get_location_name(gps_coords)
             
             return PhotoInfo(
                 filepath=filepath,
                 datetime=photo_datetime,
                 gps_coords=gps_coords,
-                location_name=location_name,
+                location_name=None,  # Wird später in post_process_geocoding() gesetzt
                 file_hash=file_hash,
                 file_size=filepath.stat().st_size,
                 is_video=filepath.suffix.lower() in self.video_extensions
@@ -545,6 +709,12 @@ class PhotoOrganizer:
     
     def scan_photos(self) -> None:
         """Scannt alle Fotos im Quellverzeichnis mit paralleler Verarbeitung"""
+        
+        # Versuche Cache zu laden
+        if self.cache_file and self.load_cache():
+            print("📂 Verwende Daten aus Cache")
+            return
+        
         print(f"🔍 Scanne Fotos in: {self.source_dir}")
         
         # Sammle alle zu verarbeitenden Dateien
@@ -555,12 +725,13 @@ class PhotoOrganizer:
         
         print(f"📁 Gefunden: {len(all_files)} Dateien zum Verarbeiten")
         print(f"🚀 Starte parallele Verarbeitung mit {self.max_workers} Threads...")
+        print("⚠️  Geocoding wird später sequenziell durchgeführt")
         
         # Progress tracking
         processed_count = 0
         duplicates_count = 0
         
-        # Parallele Verarbeitung mit ThreadPoolExecutor
+        # Parallele Verarbeitung mit ThreadPoolExecutor (OHNE Geocoding)
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             # Alle Tasks starten
             future_to_filepath = {
@@ -587,22 +758,26 @@ class PhotoOrganizer:
                     else:
                         self.photos.append(photo_info)
                         
-                        # Kurze Info für wichtige Dateien
-                        if photo_info.gps_coords and photo_info.location_name:
-                            print(f"  📍 {filepath.name}: {photo_info.location_name}")
-                        
                 except Exception as e:
                     print(f"❌ Fehler bei {filepath}: {e}")
         
-        print(f"\n✅ Verarbeitung abgeschlossen:")
+        print(f"\n✅ Parallel-Verarbeitung abgeschlossen:")
         print(f"  📸 {len(self.photos)} Fotos/Videos erfolgreich verarbeitet")
         print(f"  🗑️  {duplicates_count} Duplikate gefunden")
         print(f"  🌍 {len([p for p in self.photos if p.gps_coords])} Fotos mit GPS-Daten")
-        print(f"  📍 {len([p for p in self.photos if p.location_name])} Fotos mit Ortsinformation")
         
-        if self.use_geocoding:
-            with self.location_cache_lock:
-                print(f"  🗺️  {len(self.location_cache)} Orte im Cache gespeichert")
+        # Cache speichern (vor Geocoding)
+        if self.cache_file:
+            self.save_cache()
+        
+        # Geocoding als separater sequenzieller Schritt
+        self.post_process_geocoding()
+        
+        # Cache erneut speichern (nach Geocoding)
+        if self.cache_file:
+            self.save_cache()
+        
+        print(f"  📍 {len([p for p in self.photos if p.location_name])} Fotos mit Ortsinformation")
     
     def group_photos_into_events(self) -> Dict[str, List[PhotoInfo]]:
         """Gruppiert Fotos in Events basierend auf Zeit und Ort"""
@@ -615,6 +790,7 @@ class PhotoOrganizer:
         events = {}
         current_event_photos = []
         current_event_start = None
+        single_files = []  # Sammlung für einzelne Dateien
         
         for photo in sorted_photos:
             if not current_event_photos:
@@ -652,12 +828,8 @@ class PhotoOrganizer:
                         event_name = self.create_event_name(current_event_photos)
                         events[event_name] = current_event_photos.copy()
                     else:
-                        # Zu kleine Events zu Einzeltagen hinzufügen
-                        for p in current_event_photos:
-                            day_name = p.datetime.strftime('%Y/%m-%d')
-                            if day_name not in events:
-                                events[day_name] = []
-                            events[day_name].append(p)
+                        # Zu kleine Events: sammle einzelne Dateien
+                        single_files.extend(current_event_photos)
                     
                     # Neues Event starten
                     current_event_photos = [photo]
@@ -669,11 +841,12 @@ class PhotoOrganizer:
                 event_name = self.create_event_name(current_event_photos)
                 events[event_name] = current_event_photos
             else:
-                for p in current_event_photos:
-                    day_name = p.datetime.strftime('%Y/%m-%d')
-                    if day_name not in events:
-                        events[day_name] = []
-                    events[day_name].append(p)
+                # Zu kleine Events: sammle einzelne Dateien
+                single_files.extend(current_event_photos)
+        
+        # Einzelne Dateien direkt im Zielverzeichnis (ohne Unterordner)
+        if single_files:
+            events["."] = single_files  # "." bedeutet aktuelles/Hauptverzeichnis
         
         return events
     
@@ -727,7 +900,16 @@ class PhotoOrganizer:
         events = self.group_photos_into_events()
         
         print("\n=== VORSCHAU DER ORGANISATION ===")
-        print(f"Insgesamt {len(self.photos)} Fotos in {len(events)} Ordnern:")
+        
+        # Separate Zählung für Events und einzelne Dateien
+        event_count = len([k for k in events.keys() if k != "."])
+        single_files_count = len(events.get(".", []))
+        
+        print(f"Insgesamt {len(self.photos)} Fotos:")
+        if event_count > 0:
+            print(f"  📁 {event_count} Event-Ordner")
+        if single_files_count > 0:
+            print(f"  📄 {single_files_count} einzelne Dateien (direkt im Zielverzeichnis)")
         
         for event_name, photos in events.items():
             photo_count = len([p for p in photos if not p.is_video])
@@ -736,9 +918,14 @@ class PhotoOrganizer:
             start_date = min(p.datetime for p in photos)
             end_date = max(p.datetime for p in photos)
             
-            print(f"\n📁 {event_name}/")
-            print(f"   📊 {photo_count} Fotos, {video_count} Videos")
-            print(f"   📅 {start_date.strftime('%d.%m.%Y %H:%M')} - {end_date.strftime('%d.%m.%Y %H:%M')}")
+            if event_name == ".":
+                print(f"\n📄 Einzelne Dateien (Zielverzeichnis):")
+                print(f"   📊 {photo_count} Fotos, {video_count} Videos")
+                print(f"   📅 Zeitraum: {start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}")
+            else:
+                print(f"\n📁 {event_name}/")
+                print(f"   📊 {photo_count} Fotos, {video_count} Videos")
+                print(f"   📅 {start_date.strftime('%d.%m.%Y %H:%M')} - {end_date.strftime('%d.%m.%Y %H:%M')}")
             
             # GPS-Info falls verfügbar
             gps_photos = [p for p in photos if p.gps_coords]
@@ -763,7 +950,7 @@ class PhotoOrganizer:
         """Organisiert die Fotos in die Zielstruktur"""
         events = self.group_photos_into_events()
         
-        # Shell-Script generieren falls gewünscht
+        # Shell-Script generieren falls gewünscht (am Ende!)
         if self.generate_script:
             self.generate_shell_script(events)
             if dry_run:
@@ -781,12 +968,16 @@ class PhotoOrganizer:
         error_count = 0
         
         for event_name, photos in events.items():
-            target_folder = self.target_dir / event_name
-            
-            if not dry_run:
-                target_folder.mkdir(parents=True, exist_ok=True)
-            
-            print(f"\n📁 {event_name}/ ({len(photos)} Dateien)")
+            if event_name == ".":
+                # Einzelne Dateien direkt ins Zielverzeichnis
+                target_folder = self.target_dir
+                print(f"\n📄 Einzelne Dateien (Zielverzeichnis) - {len(photos)} Dateien")
+            else:
+                # Event-Ordner
+                target_folder = self.target_dir / event_name
+                if not dry_run:
+                    target_folder.mkdir(parents=True, exist_ok=True)
+                print(f"\n📁 {event_name}/ ({len(photos)} Dateien)")
             
             for photo in photos:
                 target_path = target_folder / photo.filepath.name
@@ -802,10 +993,16 @@ class PhotoOrganizer:
                 
                 try:
                     if dry_run:
-                        print(f"  würde verschieben: {photo.filepath.name} -> {target_path}")
+                        if event_name == ".":
+                            print(f"  würde verschieben: {photo.filepath.name} -> (Zielverzeichnis)/{target_path.name}")
+                        else:
+                            print(f"  würde verschieben: {photo.filepath.name} -> {target_path}")
                     else:
                         shutil.move(str(photo.filepath), str(target_path))
-                        print(f"  ✅ {photo.filepath.name} -> {target_path.name}")
+                        if event_name == ".":
+                            print(f"  ✅ {photo.filepath.name} -> (Zielverzeichnis)/{target_path.name}")
+                        else:
+                            print(f"  ✅ {photo.filepath.name} -> {target_path.name}")
                     moved_count += 1
                 except Exception as e:
                     print(f"  ❌ Fehler bei {photo.filepath.name}: {e}")
@@ -834,6 +1031,7 @@ def main():
     parser.add_argument('--max-workers', type=int, default=None, help='Anzahl paralleler Threads (default: auto)')
     parser.add_argument('--generate-script', action='store_true', help='Erzeugt Shell-Script für spätere Ausführung')
     parser.add_argument('--script-path', default='photo_move_script.sh', help='Pfad für Shell-Script (default: photo_move_script.sh)')
+    parser.add_argument('--cache', help='JSON-Cache-Datei für Photo-Daten (z.B. --cache=photos.json)')
     
     args = parser.parse_args()
     
@@ -847,7 +1045,8 @@ def main():
         use_geocoding=not args.no_geocoding,
         max_workers=args.max_workers,
         generate_script=args.generate_script,
-        script_path=args.script_path
+        script_path=args.script_path,
+        cache_file=args.cache
     )
     
     # Fotos scannen

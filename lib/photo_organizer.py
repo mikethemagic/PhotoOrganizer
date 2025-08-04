@@ -9,8 +9,10 @@ import hashlib
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Dict, List, Tuple, Optional, Set
 from dataclasses import dataclass
 from collections import defaultdict
+import os
 import math
 import threading
 from PIL import Image
@@ -67,7 +69,8 @@ class PhotoOrganizer:
                  generate_script: bool = False,
                  script_path: str = None,
                  cache_file: Optional[str] = None,
-                 add_exif: bool = False):
+                 add_exif: bool = False,
+                 powershell: bool = False):
         """
         Initialisiert den Photo Organizer
         
@@ -84,6 +87,7 @@ class PhotoOrganizer:
             script_path: Pfad für das Shell-Script (None = auto mit PROJECT_SCRIPTS)
             cache_file: JSON-Cache-Datei für Photo-Daten und Geocoding (None = auto mit PROJECT_CACHE)
             add_exif: Fügt EXIF-Daten basierend auf Dateinamen hinzu
+            powershell: Erzeugt PowerShell-Script (.ps1) statt Bash-Script (.sh)
         """
         self.source_dir = Path(source_dir)
         self.target_dir = Path(target_dir)
@@ -95,6 +99,7 @@ class PhotoOrganizer:
         self.max_workers = max_workers or min(32, (os.cpu_count() or 1) + 4)
         self.generate_script = generate_script
         self.add_exif = add_exif and PILLOW_AVAILABLE
+        self.powershell = powershell
         
         if add_exif and not PILLOW_AVAILABLE:
             print("⚠️  --addexif erfordert PIL/Pillow. Feature deaktiviert.")
@@ -137,7 +142,8 @@ class PhotoOrganizer:
         if self.cache_file:
             print(f"Cache-Datei: {self.cache_file}")
         if self.generate_script:
-            print(f"Script-Datei: {self.script_path}")
+            script_type = "PowerShell" if self.powershell else "Bash"
+            print(f"{script_type}-Script: {self.script_path}")
         if self.add_exif:
             print(f"EXIF-Hinzufügung: Aktiviert")
     
@@ -253,14 +259,18 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
             scripts_dir = Path(project_scripts)
             # Erstelle Verzeichnis falls es nicht existiert
             scripts_dir.mkdir(parents=True, exist_ok=True)
-            script_filename = f"photo_move_{self.get_timestamp()}.sh"
+            
+            # Bestimme Dateiendung basierend auf Script-Typ
+            extension = ".ps1" if self.powershell else ".sh"
+            script_filename = f"photo_move_{self.get_timestamp()}{extension}"
             script_path = scripts_dir / script_filename
             print(f"🔧 Verwende PROJECT_SCRIPTS: {script_path}")
             return str(script_path)
         else:
             # Fallback auf aktuelles Verzeichnis
             print(f"🔧 PROJECT_SCRIPTS nicht gesetzt, verwende aktuelles Verzeichnis")
-            return "photo_move_script.sh"
+            extension = ".ps1" if self.powershell else ".sh"
+            return f"photo_move_script{extension}"
     
     def generate_cache_filename(self) -> str:
         """Generiert automatischen Cache-Dateinamen mit PROJECT_CACHE falls verfügbar"""
@@ -397,11 +407,18 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
     
     def generate_shell_script(self, events: Dict[str, List[PhotoInfo]]) -> None:
         """Erzeugt Shell-Script für die Foto-Organisation"""
+        if self.powershell:
+            self.generate_powershell_script(events)
+        else:
+            self.generate_bash_script(events)
+    
+    def generate_bash_script(self, events: Dict[str, List[PhotoInfo]]) -> None:
+        """Erzeugt Bash-Script für die Foto-Organisation"""
         script_content = []
         
         # Script-Header
         script_content.append("#!/bin/bash")
-        script_content.append("# Automatisch generiertes Script für Foto-Organisation")
+        script_content.append("# Automatisch generiertes Bash-Script für Foto-Organisation")
         script_content.append(f"# Erstellt am: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         script_content.append(f"# Quelle: {self.source_dir}")
         script_content.append(f"# Ziel: {self.target_dir}")
@@ -443,6 +460,220 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
         script_content.append("")
         
         script_content.append("echo -e \"${BLUE}🚀 Starte Foto-Organisation...${NC}\"")
+        script_content.append("echo")
+        script_content.append("")
+        
+        # Wechsle ins Quellverzeichnis
+        script_content.append("# Wechsle ins Quellverzeichnis")
+        source_escaped = self.escape_shell_path(self.source_dir)
+        script_content.append(f"cd {source_escaped}")
+        script_content.append(f"echo -e \"${{YELLOW}}📁 Arbeitsverzeichnis: $(pwd)${{NC}}\"")
+        script_content.append("echo")
+        script_content.append("")
+        
+        # Sammle alle Move-Kommandos
+        all_moves = []
+        
+        for event_name, photos in events.items():
+            if event_name == "einzeldateien" or event_name.endswith("/einzeldateien"):
+                # Einzeldateien in Jahresordnern
+                if "/" in event_name:
+                    year = event_name.split("/")[0]
+                    target_folder = self.target_dir / year / "einzeldateien" 
+                    script_content.append(f"# 📄 Einzeldateien {year} ({len(photos)} Dateien)")
+                    script_content.append(f"echo -e \"${{BLUE}}📄 Einzeldateien {year} ({len(photos)} Dateien)${{NC}}\"")
+                else:
+                    target_folder = self.target_dir / "einzeldateien"
+                    script_content.append(f"# 📄 Einzeldateien ({len(photos)} Dateien)")
+                    script_content.append(f"echo -e \"${{BLUE}}📄 Einzeldateien ({len(photos)} Dateien)${{NC}}\"")
+                
+                # Erstelle Zielordner
+                target_escaped = self.escape_shell_path(target_folder)
+                script_content.append(f"mkdir -p {target_escaped}")
+            elif event_name == ".":
+                # Fallback: Einzelne Dateien direkt ins Zielverzeichnis (sollte nicht mehr vorkommen)
+                target_folder = self.target_dir
+                script_content.append(f"# 📄 Einzelne Dateien -> Zielverzeichnis ({len(photos)} Dateien)")
+                script_content.append(f"echo -e \"${{BLUE}}📄 Einzelne Dateien -> Zielverzeichnis ({len(photos)} Dateien)${{NC}}\"")
+            else:
+                # Event-Ordner
+                target_folder = self.target_dir / event_name
+                script_content.append(f"# 📁 {event_name}/ ({len(photos)} Dateien)")
+                script_content.append(f"echo -e \"${{BLUE}}📁 {event_name}/ ({len(photos)} Dateien)${{NC}}\"")
+                
+                # Erstelle Zielordner
+                target_escaped = self.escape_shell_path(target_folder)
+                script_content.append(f"mkdir -p {target_escaped}")
+            
+            # Move-Kommandos für diese Gruppe
+            for photo in photos:
+                target_path = target_folder / photo.filepath.name
+                
+                # Sammle für Statistiken
+                all_moves.append((photo.filepath, target_path))
+                
+                # Relative Pfade für einfachere Kommandos
+                rel_source = photo.filepath.relative_to(self.source_dir)
+                rel_source_escaped = self.escape_shell_path(rel_source)
+                target_escaped = self.escape_shell_path(target_path)
+                
+                # Funktionsaufruf
+                script_content.append(f"move_file {rel_source_escaped} {target_escaped}")
+            
+            script_content.append("echo")
+        
+        # Script-Footer mit Statistiken
+        script_content.append("")
+        script_content.append("# Zusammenfassung")
+        script_content.append("echo")
+        script_content.append("echo -e \"${BLUE}=== ZUSAMMENFASSUNG ===${NC}\"")
+        script_content.append("echo -e \"${GREEN}✅ $moved_count Dateien erfolgreich verschoben${NC}\"")
+        script_content.append("if [[ $error_count -gt 0 ]]; then")
+        script_content.append("    echo -e \"${RED}❌ $error_count Fehler aufgetreten${NC}\"")
+        script_content.append("    exit 1")
+        script_content.append("else")
+        script_content.append("    echo -e \"${GREEN}🎉 Alle Dateien erfolgreich organisiert!${NC}\"")
+        script_content.append("fi")
+        
+        # Speichere alle Move-Kommandos für interne Verwendung
+        self.move_commands = all_moves
+        
+        # Script in Datei schreiben
+        self.write_script_to_file(events, script_content, all_moves)
+    
+    def generate_powershell_script(self, events: Dict[str, List[PhotoInfo]]) -> None:
+        """Erzeugt PowerShell-Script für die Foto-Organisation"""
+        script_content = []
+        
+        # Script-Header
+        script_content.append("# Automatisch generiertes PowerShell-Script für Foto-Organisation")
+        script_content.append(f"# Erstellt am: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        script_content.append(f"# Quelle: {self.source_dir}")
+        script_content.append(f"# Ziel: {self.target_dir}")
+        script_content.append("")
+        script_content.append("# Fehlerbehandlung")
+        script_content.append("$ErrorActionPreference = 'Stop'")
+        script_content.append("")
+        script_content.append("# Statistiken")
+        script_content.append("$movedCount = 0")
+        script_content.append("$errorCount = 0")
+        script_content.append("")
+        
+        # Funktion für Datei-Moves
+        script_content.append("# Funktion zum Verschieben einer einzelnen Datei")
+        script_content.append("function Move-PhotoFile {")
+        script_content.append("    param(")
+        script_content.append("        [string]$SourceFile,")
+        script_content.append("        [string]$TargetPath")
+        script_content.append("    )")
+        script_content.append("    ")
+        script_content.append("    if (Test-Path $SourceFile) {")
+        script_content.append("        try {")
+        script_content.append("            Move-Item -Path $SourceFile -Destination $TargetPath -Force")
+        script_content.append("            Write-Host \"  ✅ $(Split-Path $SourceFile -Leaf)\" -ForegroundColor Green")
+        script_content.append("            $script:movedCount++")
+        script_content.append("        }")
+        script_content.append("        catch {")
+        script_content.append("            Write-Host \"  ❌ Fehler: $(Split-Path $SourceFile -Leaf)\" -ForegroundColor Red")
+        script_content.append("            $script:errorCount++")
+        script_content.append("        }")
+        script_content.append("    }")
+        script_content.append("    else {")
+        script_content.append("        Write-Host \"  ❌ Nicht gefunden: $(Split-Path $SourceFile -Leaf)\" -ForegroundColor Red")
+        script_content.append("        $script:errorCount++")
+        script_content.append("    }")
+        script_content.append("}")
+        script_content.append("")
+        
+        script_content.append("Write-Host \"🚀 Starte Foto-Organisation...\" -ForegroundColor Blue")
+        script_content.append("Write-Host \"\"")
+        script_content.append("")
+        
+        # Wechsle ins Quellverzeichnis
+        script_content.append("# Wechsle ins Quellverzeichnis")
+        source_escaped = str(self.source_dir).replace("'", "''")
+        script_content.append(f"Set-Location '{source_escaped}'")
+        script_content.append("Write-Host \"📁 Arbeitsverzeichnis: $(Get-Location)\" -ForegroundColor Yellow")
+        script_content.append("Write-Host \"\"")
+        script_content.append("")
+        
+        # Sammle alle Move-Kommandos
+        all_moves = []
+        
+        for event_name, photos in events.items():
+            if event_name == ".":
+                # Einzelne Dateien direkt ins Zielverzeichnis
+                target_folder = self.target_dir
+                script_content.append(f"# 📄 Einzelne Dateien -> Zielverzeichnis ({len(photos)} Dateien)")
+                script_content.append(f"Write-Host \"📄 Einzelne Dateien -> Zielverzeichnis ({len(photos)} Dateien)\" -ForegroundColor Blue")
+            else:
+                # Event-Ordner
+                target_folder = self.target_dir / event_name
+                script_content.append(f"# 📁 {event_name}/ ({len(photos)} Dateien)")
+                script_content.append(f"Write-Host \"📁 {event_name}/ ({len(photos)} Dateien)\" -ForegroundColor Blue")
+                
+                # Erstelle Zielordner
+                target_escaped = str(target_folder).replace("'", "''")
+                script_content.append(f"New-Item -Path '{target_escaped}' -ItemType Directory -Force | Out-Null")
+            
+            # Move-Kommandos für diese Gruppe
+            for photo in photos:
+                target_path = target_folder / photo.filepath.name
+                
+                # Sammle für Statistiken
+                all_moves.append((photo.filepath, target_path))
+                
+                # Relative Pfade für einfachere Kommandos
+                rel_source = photo.filepath.relative_to(self.source_dir)
+                rel_source_escaped = str(rel_source).replace("'", "''")
+                target_escaped = str(target_path).replace("'", "''")
+                
+                # Funktionsaufruf
+                script_content.append(f"Move-PhotoFile '{rel_source_escaped}' '{target_escaped}'")
+            
+            script_content.append("Write-Host \"\"")
+        
+        # Script-Footer mit Statistiken
+        script_content.append("")
+        script_content.append("# Zusammenfassung")
+        script_content.append("Write-Host \"\"")
+        script_content.append("Write-Host \"=== ZUSAMMENFASSUNG ===\" -ForegroundColor Blue")
+        script_content.append("Write-Host \"✅ $movedCount Dateien erfolgreich verschoben\" -ForegroundColor Green")
+        script_content.append("if ($errorCount -gt 0) {")
+        script_content.append("    Write-Host \"❌ $errorCount Fehler aufgetreten\" -ForegroundColor Red")
+        script_content.append("    exit 1")
+        script_content.append("}")
+        script_content.append("else {")
+        script_content.append("    Write-Host \"🎉 Alle Dateien erfolgreich organisiert!\" -ForegroundColor Green")
+        script_content.append("}")
+        
+        # Speichere alle Move-Kommandos für interne Verwendung
+        self.move_commands = all_moves
+        
+        # Script in Datei schreiben
+        self.write_script_to_file(events, script_content, all_moves)
+    
+    def write_script_to_file(self, events, script_content: List[str], all_moves: List[Tuple[Path, Path]]) -> None:
+        """Schreibt Script-Inhalt in Datei"""
+        try:
+            with open(self.script_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(script_content))
+            
+            # Script ausführbar machen (nur bei Bash)
+            if not self.powershell:
+                import stat
+                self.script_path.chmod(self.script_path.stat().st_mode | stat.S_IEXEC)
+            
+            script_type = "PowerShell" if self.powershell else "Bash"
+            execution_cmd = f"powershell -ExecutionPolicy Bypass -File {self.script_path}" if self.powershell else f"bash {self.script_path}"
+            
+            print(f"\n🎯 {script_type}-Script erstellt: {self.script_path}")
+            print(f"   📊 {len(all_moves)} Move-Operationen geplant")
+            print(f"   🔧 Ausführung mit: {execution_cmd}")
+            print(f"   ⚠️  Das Script verschiebt die Dateien tatsächlich!")
+            
+        except Exception as e:
+            print(f"❌ Fehler beim Erstellen des Scripts: {e} ${BLUE} Starte Foto-Organisation...${NC}")
         script_content.append("echo")
         script_content.append("")
         
@@ -1132,14 +1363,15 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
         print("\n=== VORSCHAU DER ORGANISATION ===")
         
         # Separate Zählung für Events und einzelne Dateien
-        event_count = len([k for k in events.keys() if k != "."])
-        single_files_count = len(events.get(".", []))
+        event_count = len([k for k in events.keys() if k != "." and not k.endswith("/einzeldateien")])
+        single_files_count = sum(len(photos) for event_name, photos in events.items() 
+                                if event_name == "." or event_name.endswith("/einzeldateien"))
         
         print(f"Insgesamt {len(self.photos)} Fotos:")
         if event_count > 0:
             print(f"  📁 {event_count} Event-Ordner")
         if single_files_count > 0:
-            print(f"  📄 {single_files_count} einzelne Dateien (direkt im Zielverzeichnis)")
+            print(f"  📄 {single_files_count} einzelne Dateien (in Jahresordnern)")
         
         for event_name, photos in events.items():
             photo_count = len([p for p in photos if not p.is_video])
@@ -1148,8 +1380,12 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
             start_date = min(p.datetime for p in photos)
             end_date = max(p.datetime for p in photos)
             
-            if event_name == ".":
-                print(f"\n📄 Einzelne Dateien (Zielverzeichnis):")
+            if event_name == "." or event_name.endswith("/einzeldateien"):
+                if "/" in event_name:
+                    year = event_name.split("/")[0]
+                    print(f"\n📄 Einzeldateien {year}/:")
+                else:
+                    print(f"\n📄 Einzeldateien:")
                 print(f"   📊 {photo_count} Fotos, {video_count} Videos")
                 print(f"   📅 Zeitraum: {start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}")
             else:
@@ -1223,14 +1459,16 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
                 
                 try:
                     if dry_run:
-                        if event_name == ".":
-                            print(f"  würde verschieben: {photo.filepath.name} -> (Zielverzeichnis)/{target_path.name}")
+                        if event_name == "." or event_name.endswith("/einzeldateien"):
+                            folder_name = f"einzeldateien" if "/" not in event_name else event_name
+                            print(f"  würde verschieben: {photo.filepath.name} -> {folder_name}/{target_path.name}")
                         else:
                             print(f"  würde verschieben: {photo.filepath.name} -> {target_path}")
                     else:
                         shutil.move(str(photo.filepath), str(target_path))
-                        if event_name == ".":
-                            print(f"  ✅ {photo.filepath.name} -> (Zielverzeichnis)/{target_path.name}")
+                        if event_name == "." or event_name.endswith("/einzeldateien"):
+                            folder_name = f"einzeldateien" if "/" not in event_name else event_name
+                            print(f"  ✅ {photo.filepath.name} -> {folder_name}/{target_path.name}")
                         else:
                             print(f"  ✅ {photo.filepath.name} -> {target_path.name}")
                     moved_count += 1
@@ -1263,6 +1501,7 @@ def main():
     parser.add_argument('--script-path', default=None, help='Pfad für Shell-Script (default: auto mit PROJECT_SCRIPTS)')
     parser.add_argument('--cache', help='JSON-Cache-Datei für Photo-Daten (default: auto mit PROJECT_CACHE)')
     parser.add_argument('--addexif', action='store_true', help='Fügt EXIF-Daten basierend auf Dateinamen zu Originaldateien hinzu')
+    parser.add_argument('--powershell', action='store_true', help='Erzeugt PowerShell-Script (.ps1) statt Bash-Script (.sh)')
     
     args = parser.parse_args()
     
@@ -1278,7 +1517,8 @@ def main():
         generate_script=args.generate_script,
         script_path=args.script_path,
         cache_file=args.cache,
-        add_exif=args.addexif
+        add_exif=args.addexif,
+        powershell=args.powershell
     )
     
     # Fotos scannen

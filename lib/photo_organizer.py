@@ -21,9 +21,11 @@ import queue
 try:
     from PIL import Image
     from PIL.ExifTags import TAGS, GPSTAGS
+    from PIL.ExifTags import Base as ExifBase
+    PILLOW_AVAILABLE = True
 except ImportError:
     print("PIL/Pillow nicht installiert. Installiere mit: pip install Pillow")
-    exit(1)
+    PILLOW_AVAILABLE = False
 
 try:
     import subprocess
@@ -40,12 +42,7 @@ except ImportError:
     GEOCODING_AVAILABLE = False
     print("Warnung: requests nicht verfügbar. Installiere mit: pip install requests")
 
-try:
-    import configparser
-    CONFIG_AVAILABLE = True
-except ImportError:
-    CONFIG_AVAILABLE = False
-    print("Warnung: configparser nicht verfügbar.")
+import configparser
 
 @dataclass
 class PhotoInfo:
@@ -70,7 +67,8 @@ class PhotoOrganizer:
                  max_workers: int = None,
                  generate_script: bool = False,
                  script_path: str = None,
-                 cache_file: Optional[str] = None):
+                 cache_file: Optional[str] = None,
+                 add_exif: bool = False):
         """
         Initialisiert den Photo Organizer
         
@@ -86,6 +84,7 @@ class PhotoOrganizer:
             generate_script: Erzeugt Shell-Script für spätere Ausführung
             script_path: Pfad für das Shell-Script (None = auto mit PROJECT_SCRIPTS)
             cache_file: JSON-Cache-Datei für Photo-Daten und Geocoding (None = auto mit PROJECT_CACHE)
+            add_exif: Fügt EXIF-Daten basierend auf Dateinamen hinzu
         """
         self.source_dir = Path(source_dir)
         self.target_dir = Path(target_dir)
@@ -96,6 +95,10 @@ class PhotoOrganizer:
         self.use_geocoding = use_geocoding and GEOCODING_AVAILABLE
         self.max_workers = max_workers or min(32, (os.cpu_count() or 1) + 4)
         self.generate_script = generate_script
+        self.add_exif = add_exif and PILLOW_AVAILABLE
+        
+        if add_exif and not PILLOW_AVAILABLE:
+            print("⚠️  --addexif erfordert PIL/Pillow. Feature deaktiviert.")
         
         # Auto-generiere Script-Pfad falls nicht angegeben
         if script_path is None:
@@ -109,6 +112,7 @@ class PhotoOrganizer:
         
         self.supported_extensions = {'.jpg', '.jpeg', '.png', '.tiff', '.tif', '.mov', '.mp4', '.avi', '.vid'}
         self.video_extensions = {'.mov', '.mp4', '.avi', '.vid'}
+        self.exif_writable_extensions = {'.jpg', '.jpeg', '.tiff', '.tif'}  # Formate die EXIF unterstützen
         
         self.photos: List[PhotoInfo] = []
         self.duplicates: Set[str] = set()
@@ -125,11 +129,18 @@ class PhotoOrganizer:
         # Lade Dateinamen-Pattern aus Konfiguration
         self.filename_patterns = self.load_filename_patterns()
         
+        # EXIF-Statistiken
+        self.exif_added_count = 0
+        self.exif_skipped_count = 0
+        self.exif_error_count = 0
+        
         print(f"Initialisiert mit {self.max_workers} parallelen Threads")
         if self.cache_file:
             print(f"Cache-Datei: {self.cache_file}")
         if self.generate_script:
             print(f"Script-Datei: {self.script_path}")
+        if self.add_exif:
+            print(f"EXIF-Hinzufügung: Aktiviert")
     
     def load_filename_patterns(self) -> List[str]:
         """Lädt Dateinamen-Pattern aus Konfigurationsdatei"""
@@ -257,19 +268,12 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
         # Prüfe PROJECT_CACHE Umgebungsvariable
         project_cache = os.environ.get('PROJECT_CACHE')
         
-        # Normalisiere Pfad (absoluter Pfad, aufgelöste Symlinks)
+        # Verwende nur den Namen des Quellverzeichnisses
         source_abs = self.source_dir.resolve()
-        
-        # SHA-256 Hash nur vom Quellverzeichnis erstellen
-        path_string = str(source_abs)
-        hash_object = hashlib.sha256(path_string.encode('utf-8'))
-        path_hash = hash_object.hexdigest()[:12]  # Erste 12 Zeichen für Kompaktheit
-        
-        # Lesbaren Cache-Namen erstellen
         source_name = source_abs.name or "root"
         source_clean = self.clean_filename(source_name)
         
-        cache_filename = f"photo_cache_{source_clean}_{path_hash}.json"
+        cache_filename = f"photo_cache_{source_clean}.json"
         
         if project_cache:
             cache_dir = Path(project_cache)
@@ -336,6 +340,58 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
         
         return None
     
+    def add_exif_to_file(self, filepath: Path, datetime_from_filename: datetime) -> bool:
+        """Fügt EXIF-Daten aus Dateinamen zu Bilddatei hinzu"""
+        if not self.add_exif:
+            return False
+            
+        # Nur für unterstützte Bildformate
+        if filepath.suffix.lower() not in self.exif_writable_extensions:
+            return False
+            
+        try:
+            # Prüfe ob bereits EXIF-Datum vorhanden
+            existing_exif_date = self.get_exif_datetime(filepath)
+            if existing_exif_date:
+                print(f"  ⏭️  EXIF bereits vorhanden: {filepath.name}")
+                self.exif_skipped_count += 1
+                return False
+            
+            # Lade Bild
+            with Image.open(filepath) as img:
+                # Hole existierende EXIF-Daten oder erstelle neue
+                exif_dict = img.getexif()
+                
+                # Konvertiere datetime zu EXIF-Format (YYYY:MM:DD HH:MM:SS)
+                exif_datetime_str = datetime_from_filename.strftime('%Y:%m:%d %H:%M:%S')
+                
+                # Setze EXIF-Tags für Datum/Zeit
+                # 306 = DateTime (Image creation date)
+                # 36867 = DateTimeOriginal (Original image date)  
+                # 36868 = DateTimeDigitized (Digitization date)
+                exif_dict[306] = exif_datetime_str      # DateTime
+                exif_dict[36867] = exif_datetime_str    # DateTimeOriginal
+                exif_dict[36868] = exif_datetime_str    # DateTimeDigitized
+                
+                # Optional: Software-Tag setzen
+                exif_dict[305] = "PhotoOrganizer"       # Software
+                
+                # Erstelle Backup des Original (optional)
+                # backup_path = filepath.with_suffix(filepath.suffix + '.backup')
+                # shutil.copy2(filepath, backup_path)
+                
+                # Speichere Bild mit neuen EXIF-Daten
+                img.save(filepath, exif=exif_dict, quality=95, optimize=True)
+                
+                print(f"  ✅ EXIF hinzugefügt: {filepath.name} -> {exif_datetime_str}")
+                self.exif_added_count += 1
+                return True
+                
+        except Exception as e:
+            print(f"  ❌ EXIF-Fehler bei {filepath.name}: {e}")
+            self.exif_error_count += 1
+            return False
+    
     def escape_shell_path(self, path: Path) -> str:
         """Escapet Pfade für sichere Shell-Verwendung"""
         return f"'{str(path).replace(chr(39), chr(39) + chr(92) + chr(39) + chr(39))}'"
@@ -358,62 +414,44 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
         script_content.append('GREEN="\\033[0;32m"')
         script_content.append('RED="\\033[0;31m"')
         script_content.append('BLUE="\\033[0;34m"')
+        script_content.append('YELLOW="\\033[0;33m"')
         script_content.append('NC="\\033[0m"  # No Color')
         script_content.append("")
         script_content.append("# Statistiken")
         script_content.append("moved_count=0")
         script_content.append("error_count=0")
-        script_content.append("total_files=0")
         script_content.append("")
-        script_content.append("# Funktion für sicheres Verschieben")
-        script_content.append("safe_move() {")
-        script_content.append("    local source=\"$1\"")
-        script_content.append("    local target=\"$2\"")
-        script_content.append("    local target_dir")
-        script_content.append("    target_dir=\"$(dirname \"$target\")\"")
+        
+        # Funktion für Datei-Moves
+        script_content.append("# Funktion zum Verschieben einer einzelnen Datei")
+        script_content.append("move_file() {")
+        script_content.append("    local source_file=\"$1\"")
+        script_content.append("    local target_path=\"$2\"")
         script_content.append("    ")
-        script_content.append("    # Prüfe ob Quelldatei existiert")
-        script_content.append("    if [[ ! -f \"$source\" ]]; then")
-        script_content.append("        echo -e \"${RED}❌ Quelldatei nicht gefunden: $source${NC}\"")
-        script_content.append("        ((error_count++))")
-        script_content.append("        return 1")
-        script_content.append("    fi")
-        script_content.append("    ")
-        script_content.append("    # Erstelle Zielverzeichnis")
-        script_content.append("    if ! mkdir -p \"$target_dir\"; then")
-        script_content.append("        echo -e \"${RED}❌ Konnte Zielverzeichnis nicht erstellen: $target_dir${NC}\"")
-        script_content.append("        ((error_count++))")
-        script_content.append("        return 1")
-        script_content.append("    fi")
-        script_content.append("    ")
-        script_content.append("    # Handle Namenskonflikte")
-        script_content.append("    local final_target=\"$target\"")
-        script_content.append("    local counter=1")
-        script_content.append("    local base_name")
-        script_content.append("    local extension")
-        script_content.append("    ")
-        script_content.append("    if [[ -f \"$final_target\" ]]; then")
-        script_content.append("        base_name=\"$(basename \"$target\" | sed 's/\\.[^.]*$//')\"")
-        script_content.append("        extension=\"${target##*.}\"")
-        script_content.append("        ")
-        script_content.append("        while [[ -f \"$final_target\" ]]; do")
-        script_content.append("            final_target=\"$target_dir/${base_name}_${counter}.${extension}\"")
-        script_content.append("            ((counter++))")
-        script_content.append("        done")
-        script_content.append("    fi")
-        script_content.append("    ")
-        script_content.append("    # Verschiebe Datei")
-        script_content.append("    if mv \"$source\" \"$final_target\"; then")
-        script_content.append("        echo -e \"${GREEN}✅ $(basename \"$source\") -> $(basename \"$final_target\")${NC}\"")
-        script_content.append("        ((moved_count++))")
+        script_content.append("    if [[ -f \"$source_file\" ]]; then")
+        script_content.append("        if mv \"$source_file\" \"$target_path\"; then")
+        script_content.append("            echo -e \"  ${GREEN}✅ $(basename \"$source_file\")${NC}\"")
+        script_content.append("            moved_count=$((moved_count + 1))")
+        script_content.append("        else")
+        script_content.append("            echo -e \"  ${RED}❌ Fehler: $(basename \"$source_file\")${NC}\"")
+        script_content.append("            error_count=$((error_count + 1))")
+        script_content.append("        fi")
         script_content.append("    else")
-        script_content.append("        echo -e \"${RED}❌ Fehler beim Verschieben: $source${NC}\"")
-        script_content.append("        ((error_count++))")
-        script_content.append("        return 1")
+        script_content.append("        echo -e \"  ${RED}❌ Nicht gefunden: $(basename \"$source_file\")${NC}\"")
+        script_content.append("        error_count=$((error_count + 1))")
         script_content.append("    fi")
         script_content.append("}")
         script_content.append("")
+        
         script_content.append("echo -e \"${BLUE}🚀 Starte Foto-Organisation...${NC}\"")
+        script_content.append("echo")
+        script_content.append("")
+        
+        # Wechsle ins Quellverzeichnis
+        script_content.append("# Wechsle ins Quellverzeichnis")
+        source_escaped = self.escape_shell_path(self.source_dir)
+        script_content.append(f"cd {source_escaped}")
+        script_content.append(f"echo -e \"${{YELLOW}}📁 Arbeitsverzeichnis: $(pwd)${{NC}}\"")
         script_content.append("echo")
         script_content.append("")
         
@@ -424,26 +462,32 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
             if event_name == ".":
                 # Einzelne Dateien direkt ins Zielverzeichnis
                 target_folder = self.target_dir
-                script_content.append(f"# 📄 Einzelne Dateien (Zielverzeichnis) - {len(photos)} Dateien")
-                script_content.append(f"echo -e \"${{BLUE}}📄 Einzelne Dateien (Zielverzeichnis) - {len(photos)} Dateien${{NC}}\"")
+                script_content.append(f"# 📄 Einzelne Dateien -> Zielverzeichnis ({len(photos)} Dateien)")
+                script_content.append(f"echo -e \"${{BLUE}}📄 Einzelne Dateien -> Zielverzeichnis ({len(photos)} Dateien)${{NC}}\"")
             else:
                 # Event-Ordner
                 target_folder = self.target_dir / event_name
                 script_content.append(f"# 📁 {event_name}/ ({len(photos)} Dateien)")
                 script_content.append(f"echo -e \"${{BLUE}}📁 {event_name}/ ({len(photos)} Dateien)${{NC}}\"")
+                
+                # Erstelle Zielordner
+                target_escaped = self.escape_shell_path(target_folder)
+                script_content.append(f"mkdir -p {target_escaped}")
             
+            # Move-Kommandos für diese Gruppe
             for photo in photos:
                 target_path = target_folder / photo.filepath.name
                 
                 # Sammle für Statistiken
                 all_moves.append((photo.filepath, target_path))
                 
-                # Shell-Kommando
-                source_escaped = self.escape_shell_path(photo.filepath)
+                # Relative Pfade für einfachere Kommandos
+                rel_source = photo.filepath.relative_to(self.source_dir)
+                rel_source_escaped = self.escape_shell_path(rel_source)
                 target_escaped = self.escape_shell_path(target_path)
                 
-                script_content.append(f"safe_move {source_escaped} {target_escaped}")
-                script_content.append("((total_files++))")
+                # Funktionsaufruf
+                script_content.append(f"move_file {rel_source_escaped} {target_escaped}")
             
             script_content.append("echo")
         
@@ -512,6 +556,11 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
         filename_datetime = self.get_datetime_from_filename(filepath)
         if filename_datetime:
             print(f"  📝 Dateiname-Datum: {filename_datetime}")
+            
+            # EXIF hinzufügen falls gewünscht und möglich
+            if self.add_exif:
+                self.add_exif_to_file(filepath, filename_datetime)
+            
             return filename_datetime
         
         # 3. Priorität: Datei-Modifikationszeit
@@ -941,6 +990,13 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
         print(f"  🗑️  {duplicates_count} Duplikate gefunden")
         print(f"  🌍 {len([p for p in self.photos if p.gps_coords])} Fotos mit GPS-Daten")
         
+        # EXIF-Statistiken anzeigen
+        if self.add_exif:
+            print(f"\n📋 EXIF-Hinzufügung:")
+            print(f"  ✅ {self.exif_added_count} EXIF-Daten hinzugefügt")
+            print(f"  ⏭️  {self.exif_skipped_count} bereits vorhanden")
+            print(f"  ❌ {self.exif_error_count} Fehler")
+        
         # Cache speichern (vor Geocoding)
         if self.cache_file:
             self.save_cache()
@@ -1207,6 +1263,7 @@ def main():
     parser.add_argument('--generate-script', action='store_true', help='Erzeugt Shell-Script für spätere Ausführung')
     parser.add_argument('--script-path', default=None, help='Pfad für Shell-Script (default: auto mit PROJECT_SCRIPTS)')
     parser.add_argument('--cache', help='JSON-Cache-Datei für Photo-Daten (default: auto mit PROJECT_CACHE)')
+    parser.add_argument('--addexif', action='store_true', help='Fügt EXIF-Daten basierend auf Dateinamen zu Originaldateien hinzu')
     
     args = parser.parse_args()
     
@@ -1221,7 +1278,8 @@ def main():
         max_workers=args.max_workers,
         generate_script=args.generate_script,
         script_path=args.script_path,
-        cache_file=args.cache
+        cache_file=args.cache,
+        add_exif=args.addexif
     )
     
     # Fotos scannen

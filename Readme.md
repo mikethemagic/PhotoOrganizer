@@ -83,6 +83,24 @@ python photo_organizer.py C:\Photos C:\Organized --generate-script --powershell
 
 ---
 
+## 📚 Comprehensive Documentation
+
+### Quick Reference
+- **[API Reference](API_REFERENCE.md)** - Complete API documentation with examples
+- **[Developer Guide](DEVELOPER_GUIDE.md)** - Architecture, extending, and contributing
+- **[Examples & Use Cases](EXAMPLES.md)** - Real-world scenarios and code samples
+
+### Documentation Overview
+
+| Document | Description | Audience |
+|----------|-------------|----------|
+| [API_REFERENCE.md](API_REFERENCE.md) | Complete API documentation, all public methods, CLI options, usage examples | Developers, Power Users |
+| [DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md) | Architecture, extending the system, contributing guidelines, performance optimization | Contributors, Developers |
+| [EXAMPLES.md](EXAMPLES.md) | Real-world use cases, batch processing, troubleshooting, integrations | All Users |
+| [Readme.md](Readme.md) | Quick start, basic usage, German documentation | End Users |
+
+---
+
 ## 📚 Detaillierte Dokumentation
 
 ## Installation
@@ -498,6 +516,8 @@ events = organizer.preview_organization()
 organizer.generate_script = True
 organizer.organize_photos(dry_run=True)
 ```
+
+**📖 Für vollständige API-Dokumentation siehe [API_REFERENCE.md](API_REFERENCE.md)**
 
 ## Lizenz & Support
 

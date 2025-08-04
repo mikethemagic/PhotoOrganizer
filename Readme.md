@@ -7,27 +7,18 @@ Das Python Programm unterstützt einen dabei etwas
 
 ## 🚀 Quickstart
 
-### Installation & Setup
+### 🐧 Linux/Mac Installation & Setup
 
 **Empfohlene Methode mit Virtual Environment:**
 ```bash
 # 1. Virtual Environment erstellen und Abhängigkeiten installieren
-# Linux/Mac:
 ./bin/install_py.sh
-# Windows:
-bin\install_py.bat
 
 # 2. PhotoOrganizer verwenden
-# Linux/Mac:
 ./bin/organize.sh /pfad/zu/fotos /pfad/zu/ziel
-# Windows:
-bin\organize.bat C:\pfad\zu\fotos C:\pfad\zu\ziel
 
 # 3. Script generieren für späteren Move
-# Linux/Mac:
 ./bin/organize.sh /pfad/zu/fotos /pfad/zu/ziel --generate-script
-# Windows:
-bin\organize.bat C:\pfad\zu\fotos C:\pfad\zu\ziel --generate-script
 
 # 4. Script ausführen
 bash photo_move_20250803_233045.sh
@@ -39,7 +30,7 @@ bash photo_move_20250803_233045.sh
 pip install Pillow requests
 
 # 2. Projektumgebung einrichten (optional)
-source setenv.sh
+source bin/setenv.sh
 
 # 3. Erste Analyse (nur Vorschau)
 python photo_organizer.py /pfad/zu/fotos /pfad/zu/ziel
@@ -49,6 +40,41 @@ python photo_organizer.py /pfad/zu/fotos /pfad/zu/ziel --generate-script
 
 # 5. Script ausführen
 bash photo_move_20250803_233045.sh
+```
+
+### 🪟 Windows Installation & Setup
+
+**Empfohlene Methode mit Virtual Environment:**
+```cmd
+REM 1. Virtual Environment erstellen und Abhängigkeiten installieren
+bin\install_py.bat
+
+REM 2. PhotoOrganizer verwenden
+bin\organize.bat C:\pfad\zu\fotos C:\pfad\zu\ziel
+
+REM 3. Script generieren für späteren Move
+bin\organize.bat C:\pfad\zu\fotos C:\pfad\zu\ziel --generate-script
+
+REM 4. Script ausführen (PowerShell)
+powershell -ExecutionPolicy Bypass -File photo_move_20250803_233045.ps1
+```
+
+**Alternative manuelle Installation:**
+```cmd
+REM 1. Abhängigkeiten installieren
+pip install Pillow requests
+
+REM 2. Projektumgebung einrichten (optional)
+bin\setenv.bat
+
+REM 3. Erste Analyse (nur Vorschau)
+python photo_organizer.py C:\pfad\zu\fotos C:\pfad\zu\ziel
+
+REM 4. Script generieren für späteren Move
+python photo_organizer.py C:\pfad\zu\fotos C:\pfad\zu\ziel --generate-script --powershell
+
+REM 5. Script ausführen
+powershell -ExecutionPolicy Bypass -File photo_move_20250803_233045.ps1
 ```
 
 ### Wichtigste Features
@@ -83,36 +109,55 @@ Zielordner/
 
 ## 🎯 Häufige Anwendungsfälle
 
-### Smartphone-Fotos organisieren
+### 🐧 Linux/Mac Anwendungsfälle
+
+#### Smartphone-Fotos organisieren
 ```bash
 # Mit GPS-Daten und Geocoding
-# Linux/Mac:
 ./bin/organize.sh ~/Downloads/phone_backup ~/Photos --generate-script
-# Windows:
+```
+
+#### Screenshots sortieren
+```bash
+# EXIF-Daten hinzufügen da meist nicht vorhanden
+./bin/organize.sh ~/Screenshots ~/sorted_screenshots --addexif --generate-script
+```
+
+#### Große Foto-Sammlung (10.000+ Fotos)
+```bash
+# Mit Cache für wiederholte Läufe
+./bin/organize.sh /nas/photos /nas/organized --generate-script --max-workers 20
+```
+
+#### Network Attached Storage (NAS)
+```bash
+# Fotos vom gemounteten NAS-Laufwerk organisieren
+./bin/organize.sh /mnt/nas/photos /home/user/sorted_photos --generate-script
+```
+
+### 🪟 Windows Anwendungsfälle
+
+#### Smartphone-Fotos organisieren
+```cmd
+REM Mit GPS-Daten und Geocoding
 bin\organize.bat C:\Users\%USERNAME%\Downloads\phone_backup C:\Users\%USERNAME%\Pictures\Photos --generate-script
 ```
 
-### Screenshots sortieren
-```bash
-# EXIF-Daten hinzufügen da meist nicht vorhanden
-# Linux/Mac:
-./bin/organize.sh ~/Screenshots ~/sorted_screenshots --addexif --generate-script
-# Windows:
+#### Screenshots sortieren
+```cmd
+REM EXIF-Daten hinzufügen da meist nicht vorhanden
 bin\organize.bat C:\Users\%USERNAME%\Pictures\Screenshots C:\Users\%USERNAME%\Pictures\sorted_screenshots --addexif --generate-script
 ```
 
-### Große Foto-Sammlung (10.000+ Fotos)
-```bash
-# Mit Cache für wiederholte Läufe
-# Linux/Mac:
-./bin/organize.sh /nas/photos /nas/organized --generate-script --max-workers 20
-# Windows:
+#### Große Foto-Sammlung (10.000+ Fotos)
+```cmd
+REM Mit Cache für wiederholte Läufe
 bin\organize.bat D:\NAS\photos D:\NAS\organized --generate-script --max-workers 20
 ```
 
-### Windows PowerShell
-```bash
-# PowerShell-Script für Windows
+#### PowerShell-Script generieren
+```cmd
+REM PowerShell-Script für Windows erstellen
 bin\organize.bat C:\Photos C:\Organized --generate-script --powershell
 ```
 
@@ -146,24 +191,44 @@ bin\organize.bat C:\Photos C:\Organized --generate-script --powershell
 - **requests**: Für Geocoding (optional)
 - **ffprobe**: Für Video-Metadaten (optional)
 
-### Empfohlene Installation mit Virtual Environment
+### 🐧 Linux/Mac Installation
+
+#### Empfohlene Installation mit Virtual Environment
 ```bash
 # Automatische Installation mit Virtual Environment
-# Linux/Mac:
 ./bin/install_py.sh
-# Windows:
+```
+
+#### Alternative manuelle Installation
+```bash
+# Abhängigkeiten installieren
+pip install Pillow requests
+
+# Projektumgebung einrichten (optional)
+source bin/setenv.sh
+```
+
+### 🪟 Windows Installation
+
+#### Empfohlene Installation mit Virtual Environment
+```cmd
+REM Automatische Installation mit Virtual Environment
 bin\install_py.bat
 ```
 
-Diese Skripte:
+#### Alternative manuelle Installation
+```cmd
+REM Abhängigkeiten installieren
+pip install Pillow requests
+
+REM Projektumgebung einrichten (optional)
+bin\setenv.bat
+```
+
+### Was die Installations-Skripte machen:
 - Erstellen ein isoliertes Python Virtual Environment im `.venv` Ordner
 - Installieren automatisch alle erforderlichen Abhängigkeiten aus `requirements.txt`
 - Stellen sicher, dass keine Konflikte mit anderen Python-Projekten entstehen
-
-### Alternative manuelle Installation
-```bash
-pip install Pillow requests
-```
 
 ### Projektstruktur einrichten (optional)
 ```bash
@@ -184,17 +249,27 @@ source setenv.sh
 
 ## Kommandozeilen-Interface
 
-### Grundlegende Syntax
+### 🐧 Linux/Mac Syntax
+
 **Empfohlene Methode (mit Skripten):**
 ```bash
-# Linux/Mac:
 ./bin/organize.sh <quellordner> <zielordner> [optionen]
-# Windows:
-bin\organize.bat <quellordner> <zielordner> [optionen]
 ```
 
 **Alternative direkte Ausführung:**
 ```bash
+python photo_organizer.py <quellordner> <zielordner> [optionen]
+```
+
+### 🪟 Windows Syntax
+
+**Empfohlene Methode (mit Skripten):**
+```cmd
+bin\organize.bat <quellordner> <zielordner> [optionen]
+```
+
+**Alternative direkte Ausführung:**
+```cmd
 python photo_organizer.py <quellordner> <zielordner> [optionen]
 ```
 
@@ -437,14 +512,23 @@ pip install Pillow
 ```
 
 #### "requests nicht verfügbar"
+
+**Linux/Mac:**
 ```bash
 # Abhängigkeiten installieren
-./bin/install_py.sh  # Linux/Mac
-# oder
-bin\install_py.bat   # Windows
+./bin/install_py.sh
 
 # Oder ohne Geocoding arbeiten:
 ./bin/organize.sh /fotos /ziel --no-geocoding
+```
+
+**Windows:**
+```cmd
+REM Abhängigkeiten installieren
+bin\install_py.bat
+
+REM Oder ohne Geocoding arbeiten:
+bin\organize.bat C:\fotos C:\ziel --no-geocoding
 ```
 
 #### "Cache-Quelle passt nicht"
@@ -506,10 +590,11 @@ jq '.location_cache | length' /tmp/debug.json
 
 ## Beispiele
 
-### Smartphone-Backup organisieren
+### 🐧 Linux/Mac Beispiele
+
+#### Smartphone-Backup organisieren
 ```bash
 # Mit allen Features
-# Linux/Mac:
 ./bin/organize.sh \
     /backup/iphone_photos \
     /nas/family_photos \
@@ -517,8 +602,48 @@ jq '.location_cache | length' /tmp/debug.json
     --addexif \
     --min-event-photos 8 \
     --geo-radius 5
+```
 
-# Windows:
+#### Alte Foto-Sammlung aufräumen
+```bash
+# Ohne GPS, größere Events
+./bin/organize.sh \
+    /archive/old_photos \
+    /sorted/decades \
+    --no-geocoding \
+    --min-event-photos 25 \
+    --event-max-days 7 \
+    --generate-script
+```
+
+#### Screenshots sortieren
+```bash
+# EXIF hinzufügen, kleine Events erlauben
+./bin/organize.sh \
+    ~/Screenshots \
+    ~/Pictures/Screenshots_sorted \
+    --addexif \
+    --min-event-photos 3 \
+    --same-day-hours 24 \
+    --generate-script
+```
+
+#### NAS/Server Umgebung
+```bash
+# Große Sammlung auf Network Storage
+./bin/organize.sh \
+    /mnt/nas/camera_uploads \
+    /mnt/nas/organized_photos \
+    --generate-script \
+    --max-workers 16 \
+    --cache /tmp/photo_cache.json
+```
+
+### 🪟 Windows Beispiele
+
+#### Smartphone-Backup organisieren
+```cmd
+REM Mit allen Features
 bin\organize.bat ^
     C:\backup\iphone_photos ^
     D:\nas\family_photos ^
@@ -528,19 +653,9 @@ bin\organize.bat ^
     --geo-radius 5
 ```
 
-### Alte Foto-Sammlung aufräumen
-```bash
-# Ohne GPS, größere Events
-# Linux/Mac:
-./bin/organize.sh \
-    /archive/old_photos \
-    /sorted/decades \
-    --no-geocoding \
-    --min-event-photos 25 \
-    --event-max-days 7 \
-    --generate-script
-
-# Windows:
+#### Alte Foto-Sammlung aufräumen
+```cmd
+REM Ohne GPS, größere Events
 bin\organize.bat ^
     C:\archive\old_photos ^
     D:\sorted\decades ^
@@ -550,19 +665,9 @@ bin\organize.bat ^
     --generate-script
 ```
 
-### Screenshots sortieren
-```bash
-# EXIF hinzufügen, kleine Events erlauben
-# Linux/Mac:
-./bin/organize.sh \
-    ~/Screenshots \
-    ~/Pictures/Screenshots_sorted \
-    --addexif \
-    --min-event-photos 3 \
-    --same-day-hours 24 \
-    --generate-script
-
-# Windows:
+#### Screenshots sortieren
+```cmd
+REM EXIF hinzufügen, kleine Events erlauben
 bin\organize.bat ^
     C:\Users\%USERNAME%\Pictures\Screenshots ^
     C:\Users\%USERNAME%\Pictures\Screenshots_sorted ^
@@ -572,9 +677,9 @@ bin\organize.bat ^
     --generate-script
 ```
 
-### Windows-Umgebung
-```bash
-# PowerShell-Script für Windows
+#### PowerShell-Script für Windows
+```cmd
+REM PowerShell-Script generieren und ausführen
 bin\organize.bat ^
     "C:\Users\Admin\Pictures" ^
     "D:\Photos\Organized" ^

@@ -539,7 +539,7 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
         self.move_commands = all_moves
         
         # Script in Datei schreiben
-        self.write_script_to_file(events, script_content, all_moves)
+        self.write_script_to_file(script_content, all_moves)
     
     def generate_powershell_script(self, events: Dict[str, List[PhotoInfo]]) -> None:
         """Erzeugt PowerShell-Script für die Foto-Organisation"""
@@ -651,9 +651,9 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
         self.move_commands = all_moves
         
         # Script in Datei schreiben
-        self.write_script_to_file(events, script_content, all_moves)
+        self.write_script_to_file(script_content, all_moves)
     
-    def write_script_to_file(self, events, script_content: List[str], all_moves: List[Tuple[Path, Path]]) -> None:
+    def write_script_to_file(self, script_content: List[str], all_moves: List[Tuple[Path, Path]]) -> None:
         """Schreibt Script-Inhalt in Datei"""
         try:
             with open(self.script_path, 'w', encoding='utf-8') as f:
@@ -670,85 +670,6 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
             print(f"\n🎯 {script_type}-Script erstellt: {self.script_path}")
             print(f"   📊 {len(all_moves)} Move-Operationen geplant")
             print(f"   🔧 Ausführung mit: {execution_cmd}")
-            print(f"   ⚠️  Das Script verschiebt die Dateien tatsächlich!")
-            
-        except Exception as e:
-            print(f"❌ Fehler beim Erstellen des Scripts: {e} ${BLUE} Starte Foto-Organisation...${NC}")
-        script_content.append("echo")
-        script_content.append("")
-        
-        # Wechsle ins Quellverzeichnis
-        script_content.append("# Wechsle ins Quellverzeichnis")
-        source_escaped = self.escape_shell_path(self.source_dir)
-        script_content.append(f"cd {source_escaped}")
-        script_content.append(f"echo -e \"${{YELLOW}}📁 Arbeitsverzeichnis: $(pwd)${{NC}}\"")
-        script_content.append("echo")
-        script_content.append("")
-        
-        # Sammle alle Move-Kommandos
-        all_moves = []
-        
-        for event_name, photos in events.items():
-            if event_name == ".":
-                # Einzelne Dateien direkt ins Zielverzeichnis
-                target_folder = self.target_dir
-                script_content.append(f"# 📄 Einzelne Dateien -> Zielverzeichnis ({len(photos)} Dateien)")
-                script_content.append(f"echo -e \"${{BLUE}}📄 Einzelne Dateien -> Zielverzeichnis ({len(photos)} Dateien)${{NC}}\"")
-            else:
-                # Event-Ordner
-                target_folder = self.target_dir / event_name
-                script_content.append(f"# 📁 {event_name}/ ({len(photos)} Dateien)")
-                script_content.append(f"echo -e \"${{BLUE}}📁 {event_name}/ ({len(photos)} Dateien)${{NC}}\"")
-                
-                # Erstelle Zielordner
-                target_escaped = self.escape_shell_path(target_folder)
-                script_content.append(f"mkdir -p {target_escaped}")
-            
-            # Move-Kommandos für diese Gruppe
-            for photo in photos:
-                target_path = target_folder / photo.filepath.name
-                
-                # Sammle für Statistiken
-                all_moves.append((photo.filepath, target_path))
-                
-                # Relative Pfade für einfachere Kommandos
-                rel_source = photo.filepath.relative_to(self.source_dir)
-                rel_source_escaped = self.escape_shell_path(rel_source)
-                target_escaped = self.escape_shell_path(target_path)
-                
-                # Funktionsaufruf
-                script_content.append(f"move_file {rel_source_escaped} {target_escaped}")
-            
-            script_content.append("echo")
-        
-        # Script-Footer mit Statistiken
-        script_content.append("")
-        script_content.append("# Zusammenfassung")
-        script_content.append("echo")
-        script_content.append("echo -e \"${BLUE}=== ZUSAMMENFASSUNG ===${NC}\"")
-        script_content.append("echo -e \"${GREEN}✅ $moved_count Dateien erfolgreich verschoben${NC}\"")
-        script_content.append("if [[ $error_count -gt 0 ]]; then")
-        script_content.append("    echo -e \"${RED}❌ $error_count Fehler aufgetreten${NC}\"")
-        script_content.append("    exit 1")
-        script_content.append("else")
-        script_content.append("    echo -e \"${GREEN}🎉 Alle Dateien erfolgreich organisiert!${NC}\"")
-        script_content.append("fi")
-        
-        # Speichere alle Move-Kommandos für interne Verwendung
-        self.move_commands = all_moves
-        
-        # Script in Datei schreiben
-        try:
-            with open(self.script_path, 'w', encoding='utf-8') as f:
-                f.write('\n'.join(script_content))
-            
-            # Script ausführbar machen
-            import stat
-            self.script_path.chmod(self.script_path.stat().st_mode | stat.S_IEXEC)
-            
-            print(f"\n🎯 Shell-Script erstellt: {self.script_path}")
-            print(f"   📊 {len(all_moves)} Move-Operationen geplant")
-            print(f"   🔧 Ausführung mit: bash {self.script_path}")
             print(f"   ⚠️  Das Script verschiebt die Dateien tatsächlich!")
             
         except Exception as e:

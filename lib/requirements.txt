@@ -1,0 +1,7 @@
+# PhotoOrganizer Dependencies
+Pillow>=8.0.0
+requests>=2.25.0
+
+# Optional for development
+pytest>=6.0.0
+black>=21.0.0

@@ -1,6 +1,9 @@
 # PhotoOrganizer - Dokumentation
 
 Ein intelligenter Python-basierter Foto-Organizer, der Fotos automatisch nach Datum, Ort und Events sortiert.
+Ich hatte einen riesigen Stapel von automatisch gesicherten Fotos, die ich im Ordner etwas thematisch und nach Jahr und Ort zusammenfassen wollte. 
+Allerdings mache ich das bei mehr als 1000 Dateien nicht mehr von Hand. 
+Das Python Programm unterstützt einen dabei etwas
 
 ## 🚀 Quickstart
 

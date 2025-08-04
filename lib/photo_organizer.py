@@ -4,45 +4,44 @@ Automatische Foto-Organisation basierend auf Zeitstempel und GPS-Daten
 Organisiert Fotos in Ordnerstrukturen: YYYY/MM-DD/ oder YYYY/Event_YYYY-MM-DD_bis_YYYY-MM-DD/
 """
 
-import os
 import shutil
 import hashlib
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional, Set
 from dataclasses import dataclass
 from collections import defaultdict
 import math
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import queue
+from PIL import Image
+from PIL.ExifTags import TAGS, GPSTAGS
+from PIL.ExifTags import Base as ExifBase
+import subprocess
+import requests
+import time
+import configparser
+import re
+import stat
+from collections import Counter
+import argparse
 
 try:
-    from PIL import Image
-    from PIL.ExifTags import TAGS, GPSTAGS
-    from PIL.ExifTags import Base as ExifBase
     PILLOW_AVAILABLE = True
 except ImportError:
     print("PIL/Pillow nicht installiert. Installiere mit: pip install Pillow")
     PILLOW_AVAILABLE = False
 
 try:
-    import subprocess
     FFPROBE_AVAILABLE = True
 except ImportError:
     FFPROBE_AVAILABLE = False
     print("Warnung: ffprobe nicht verfügbar. Video-Metadaten werden nicht extrahiert.")
 
 try:
-    import requests
-    import time
     GEOCODING_AVAILABLE = True
 except ImportError:
     GEOCODING_AVAILABLE = False
     print("Warnung: requests nicht verfügbar. Installiere mit: pip install requests")
-
-import configparser
 
 @dataclass
 class PhotoInfo:

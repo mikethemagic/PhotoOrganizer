@@ -61,7 +61,6 @@ class PhotoOrganizer:
                  same_day_hours: int = 12,
                  event_max_days: int = 3,
                  geo_radius_km: float = 10.0,
-                 min_event_photos: int = 10,
                  use_geocoding: bool = True,
                  max_workers: int = None,
                  generate_script: bool = False,
@@ -78,7 +77,6 @@ class PhotoOrganizer:
             same_day_hours: Stunden-Schwelle für gleichen Tag
             event_max_days: Maximale Tage für Event-Zusammengehörigkeit
             geo_radius_km: GPS-Radius in km für Event-Zugehörigkeit
-            min_event_photos: Mindestanzahl Fotos für Event-Erstellung
             use_geocoding: Aktiviert Reverse-Geocoding für Ortsnamen
             max_workers: Anzahl paralleler Threads (None = auto)
             generate_script: Erzeugt Shell-Script für spätere Ausführung
@@ -92,7 +90,6 @@ class PhotoOrganizer:
         self.same_day_hours = same_day_hours
         self.event_max_days = event_max_days
         self.geo_radius_km = geo_radius_km
-        self.min_event_photos = min_event_photos
         self.use_geocoding = use_geocoding and GEOCODING_AVAILABLE
         self.max_workers = max_workers or min(32, (os.cpu_count() or 1) + 4)
         self.generate_script = generate_script
@@ -1170,7 +1167,6 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
         events = {}
         current_event_photos = []
         current_event_start = None
-        single_files = []  # Sammlung für einzelne Dateien
         
         for photo in sorted_photos:
             if not current_event_photos:
@@ -1204,12 +1200,7 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
                     current_event_photos.append(photo)
                 else:
                     # Event abschließen wenn es groß genug ist
-                    if len(current_event_photos) >= self.min_event_photos:
-                        event_name = self.create_event_name(current_event_photos)
-                        events[event_name] = current_event_photos.copy()
-                    else:
-                        # Zu kleine Events: sammle einzelne Dateien
-                        single_files.extend(current_event_photos)
+                    self.event_name_from_number(events, current_event_photos)
                     
                     # Neues Event starten
                     current_event_photos = [photo]
@@ -1217,18 +1208,20 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
         
         # Letztes Event verarbeiten
         if current_event_photos:
-            if len(current_event_photos) >= self.min_event_photos:
-                event_name = self.create_event_name(current_event_photos)
-                events[event_name] = current_event_photos
-            else:
-                # Zu kleine Events: sammle einzelne Dateien
-                single_files.extend(current_event_photos)
-        
-        # Einzelne Dateien direkt im Zielverzeichnis (ohne Unterordner)
-        if single_files:
-            events["."] = single_files  # "." bedeutet aktuelles/Hauptverzeichnis
+            self.event_name_from_number(events, current_event_photos)
         
         return events
+
+    def event_name_from_number(self, events, current_event_photos):
+        if len(current_event_photos) == 1:
+            # Einzelnes Foto: direkt im Zielverzeichnis
+            event_name = self.create_event_name(current_event_photos)
+            year = event_name.split("/")[0]
+            events[year+"/einzeldateien"] = current_event_photos
+        else:
+            # Gruppe von Fotos: Event-Ordner klassisch benennen
+            event_name = self.create_event_name(current_event_photos) 
+            events[event_name] = current_event_photos
     
     def create_event_name(self, photos: List[PhotoInfo]) -> str:
         """Erstellt Event-Namen basierend auf Zeitraum und optional Ort"""
@@ -1430,7 +1423,6 @@ def main():
         same_day_hours=args.same_day_hours,
         event_max_days=args.event_max_days,
         geo_radius_km=args.geo_radius,
-        min_event_photos=args.min_event_photos,
         use_geocoding=not args.no_geocoding,
         max_workers=args.max_workers,
         generate_script=args.generate_script,

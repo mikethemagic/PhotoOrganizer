@@ -5,6 +5,7 @@ set PROJECT_BIN=%PROJECT%\bin
 set PROJECT_DATA=%PROJECT%\data
 set PROJECT_SCRIPTS=%PROJECT%\scripts
 set PROJECT_CACHE=%PROJECT%\cache
+set PROJECT_WORK=%PROJECT%\work
 set PROJECT_LIB=%PROJECT%\lib
 
 REM Create directories if they don't exist

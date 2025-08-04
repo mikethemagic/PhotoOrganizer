@@ -8,6 +8,32 @@ Das Python Programm unterstützt einen dabei etwas
 ## 🚀 Quickstart
 
 ### Installation & Setup
+
+**Empfohlene Methode mit Virtual Environment:**
+```bash
+# 1. Virtual Environment erstellen und Abhängigkeiten installieren
+# Linux/Mac:
+./bin/install_py.sh
+# Windows:
+bin\install_py.bat
+
+# 2. PhotoOrganizer verwenden
+# Linux/Mac:
+./bin/organize.sh /pfad/zu/fotos /pfad/zu/ziel
+# Windows:
+bin\organize.bat C:\pfad\zu\fotos C:\pfad\zu\ziel
+
+# 3. Script generieren für späteren Move
+# Linux/Mac:
+./bin/organize.sh /pfad/zu/fotos /pfad/zu/ziel --generate-script
+# Windows:
+bin\organize.bat C:\pfad\zu\fotos C:\pfad\zu\ziel --generate-script
+
+# 4. Script ausführen
+bash photo_move_20250803_233045.sh
+```
+
+**Alternative manuelle Installation:**
 ```bash
 # 1. Abhängigkeiten installieren
 pip install Pillow requests
@@ -60,25 +86,34 @@ Zielordner/
 ### Smartphone-Fotos organisieren
 ```bash
 # Mit GPS-Daten und Geocoding
-python photo_organizer.py ~/Downloads/phone_backup ~/Photos --generate-script
+# Linux/Mac:
+./bin/organize.sh ~/Downloads/phone_backup ~/Photos --generate-script
+# Windows:
+bin\organize.bat C:\Users\%USERNAME%\Downloads\phone_backup C:\Users\%USERNAME%\Pictures\Photos --generate-script
 ```
 
 ### Screenshots sortieren
 ```bash
 # EXIF-Daten hinzufügen da meist nicht vorhanden
-python photo_organizer.py ~/Screenshots ~/sorted_screenshots --addexif --generate-script
+# Linux/Mac:
+./bin/organize.sh ~/Screenshots ~/sorted_screenshots --addexif --generate-script
+# Windows:
+bin\organize.bat C:\Users\%USERNAME%\Pictures\Screenshots C:\Users\%USERNAME%\Pictures\sorted_screenshots --addexif --generate-script
 ```
 
 ### Große Foto-Sammlung (10.000+ Fotos)
 ```bash
 # Mit Cache für wiederholte Läufe
-python photo_organizer.py /nas/photos /nas/organized --generate-script --max-workers 20
+# Linux/Mac:
+./bin/organize.sh /nas/photos /nas/organized --generate-script --max-workers 20
+# Windows:
+bin\organize.bat D:\NAS\photos D:\NAS\organized --generate-script --max-workers 20
 ```
 
 ### Windows PowerShell
 ```bash
 # PowerShell-Script für Windows
-python photo_organizer.py C:\Photos C:\Organized --generate-script --powershell
+bin\organize.bat C:\Photos C:\Organized --generate-script --powershell
 ```
 
 ---
@@ -111,7 +146,21 @@ python photo_organizer.py C:\Photos C:\Organized --generate-script --powershell
 - **requests**: Für Geocoding (optional)
 - **ffprobe**: Für Video-Metadaten (optional)
 
-### Abhängigkeiten installieren
+### Empfohlene Installation mit Virtual Environment
+```bash
+# Automatische Installation mit Virtual Environment
+# Linux/Mac:
+./bin/install_py.sh
+# Windows:
+bin\install_py.bat
+```
+
+Diese Skripte:
+- Erstellen ein isoliertes Python Virtual Environment im `.venv` Ordner
+- Installieren automatisch alle erforderlichen Abhängigkeiten aus `requirements.txt`
+- Stellen sicher, dass keine Konflikte mit anderen Python-Projekten entstehen
+
+### Alternative manuelle Installation
 ```bash
 pip install Pillow requests
 ```
@@ -136,6 +185,15 @@ source setenv.sh
 ## Kommandozeilen-Interface
 
 ### Grundlegende Syntax
+**Empfohlene Methode (mit Skripten):**
+```bash
+# Linux/Mac:
+./bin/organize.sh <quellordner> <zielordner> [optionen]
+# Windows:
+bin\organize.bat <quellordner> <zielordner> [optionen]
+```
+
+**Alternative direkte Ausführung:**
 ```bash
 python photo_organizer.py <quellordner> <zielordner> [optionen]
 ```
@@ -343,7 +401,7 @@ screenshot = Screenshot_(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})
 for source in /media/*/DCIM /backup/phone_*; do
     if [[ -d "$source" ]]; then
         echo "Verarbeite: $source"
-        python photo_organizer.py "$source" /nas/photos --generate-script
+        ./bin/organize.sh "$source" /nas/photos --generate-script
         bash photo_move_*.sh
     fi
 done
@@ -352,21 +410,21 @@ done
 ### Testläufe mit verschiedenen Parametern
 ```bash
 # Verschiedene Event-Größen testen
-python photo_organizer.py /fotos /test1 --min-event-photos 5
-python photo_organizer.py /fotos /test2 --min-event-photos 15
-python photo_organizer.py /fotos /test3 --min-event-photos 25
+./bin/organize.sh /fotos /test1 --min-event-photos 5
+./bin/organize.sh /fotos /test2 --min-event-photos 15
+./bin/organize.sh /fotos /test3 --min-event-photos 25
 
 # GPS-Radius variieren
-python photo_organizer.py /fotos /test_5km --geo-radius 5
-python photo_organizer.py /fotos /test_20km --geo-radius 20
+./bin/organize.sh /fotos /test_5km --geo-radius 5
+./bin/organize.sh /fotos /test_20km --geo-radius 20
 ```
 
 ### Cache-Sharing zwischen Zielen
 ```bash
 # Ein Cache, verschiedene Ziele (möglich da Cache nur von Quelle abhängt)
-python photo_organizer.py /fotos /backup1 --generate-script
-python photo_organizer.py /fotos /backup2 --generate-script  # Verwendet gleichen Cache
-python photo_organizer.py /fotos /nas --generate-script      # Verwendet gleichen Cache
+./bin/organize.sh /fotos /backup1 --generate-script
+./bin/organize.sh /fotos /backup2 --generate-script  # Verwendet gleichen Cache
+./bin/organize.sh /fotos /nas --generate-script      # Verwendet gleichen Cache
 ```
 
 ## Fehlerbehebung
@@ -380,9 +438,13 @@ pip install Pillow
 
 #### "requests nicht verfügbar"
 ```bash
-pip install requests
+# Abhängigkeiten installieren
+./bin/install_py.sh  # Linux/Mac
+# oder
+bin\install_py.bat   # Windows
+
 # Oder ohne Geocoding arbeiten:
-python photo_organizer.py /fotos /ziel --no-geocoding
+./bin/organize.sh /fotos /ziel --no-geocoding
 ```
 
 #### "Cache-Quelle passt nicht"
@@ -405,22 +467,22 @@ powershell -ExecutionPolicy Bypass -File script.ps1 -Verbose
 #### Langsames Geocoding
 ```bash
 # Geocoding deaktivieren
-python photo_organizer.py /fotos /ziel --no-geocoding
+./bin/organize.sh /fotos /ziel --no-geocoding
 
 # Oder weniger Threads
-python photo_organizer.py /fotos /ziel --max-workers 4
+./bin/organize.sh /fotos /ziel --max-workers 4
 ```
 
 #### Zu viele kleine Events
 ```bash
 # Event-Mindestgröße erhöhen
-python photo_organizer.py /fotos /ziel --min-event-photos 20
+./bin/organize.sh /fotos /ziel --min-event-photos 20
 ```
 
 #### Zu große Events
 ```bash
 # Engere Parameter
-python photo_organizer.py /fotos /ziel --event-max-days 1 --geo-radius 2
+./bin/organize.sh /fotos /ziel --event-max-days 1 --geo-radius 2
 ```
 
 ### Debug-Informationen
@@ -428,7 +490,7 @@ python photo_organizer.py /fotos /ziel --event-max-days 1 --geo-radius 2
 #### Verbose-Modus
 ```bash
 # Mit Cache-Details
-python photo_organizer.py /fotos /ziel --cache=/tmp/debug.json
+./bin/organize.sh /fotos /ziel --cache=/tmp/debug.json
 
 # Cache-Inhalt prüfen
 jq '.metadata' /tmp/debug.json
@@ -439,7 +501,7 @@ jq '.location_cache | length' /tmp/debug.json
 #### Log-Files
 ```bash
 # Ausgabe in Datei umleiten
-python photo_organizer.py /fotos /ziel 2>&1 | tee photo_organizer.log
+./bin/organize.sh /fotos /ziel 2>&1 | tee photo_organizer.log
 ```
 
 ## Beispiele
@@ -447,47 +509,77 @@ python photo_organizer.py /fotos /ziel 2>&1 | tee photo_organizer.log
 ### Smartphone-Backup organisieren
 ```bash
 # Mit allen Features
-python photo_organizer.py \
+# Linux/Mac:
+./bin/organize.sh \
     /backup/iphone_photos \
     /nas/family_photos \
     --generate-script \
     --addexif \
     --min-event-photos 8 \
     --geo-radius 5
+
+# Windows:
+bin\organize.bat ^
+    C:\backup\iphone_photos ^
+    D:\nas\family_photos ^
+    --generate-script ^
+    --addexif ^
+    --min-event-photos 8 ^
+    --geo-radius 5
 ```
 
 ### Alte Foto-Sammlung aufräumen
 ```bash
 # Ohne GPS, größere Events
-python photo_organizer.py \
+# Linux/Mac:
+./bin/organize.sh \
     /archive/old_photos \
     /sorted/decades \
     --no-geocoding \
     --min-event-photos 25 \
     --event-max-days 7 \
     --generate-script
+
+# Windows:
+bin\organize.bat ^
+    C:\archive\old_photos ^
+    D:\sorted\decades ^
+    --no-geocoding ^
+    --min-event-photos 25 ^
+    --event-max-days 7 ^
+    --generate-script
 ```
 
 ### Screenshots sortieren
 ```bash
 # EXIF hinzufügen, kleine Events erlauben
-python photo_organizer.py \
+# Linux/Mac:
+./bin/organize.sh \
     ~/Screenshots \
     ~/Pictures/Screenshots_sorted \
     --addexif \
     --min-event-photos 3 \
     --same-day-hours 24 \
     --generate-script
+
+# Windows:
+bin\organize.bat ^
+    C:\Users\%USERNAME%\Pictures\Screenshots ^
+    C:\Users\%USERNAME%\Pictures\Screenshots_sorted ^
+    --addexif ^
+    --min-event-photos 3 ^
+    --same-day-hours 24 ^
+    --generate-script
 ```
 
 ### Windows-Umgebung
 ```bash
 # PowerShell-Script für Windows
-python photo_organizer.py \
-    "C:\Users\Admin\Pictures" \
-    "D:\Photos\Organized" \
-    --generate-script \
-    --powershell \
+bin\organize.bat ^
+    "C:\Users\Admin\Pictures" ^
+    "D:\Photos\Organized" ^
+    --generate-script ^
+    --powershell ^
     --max-workers 8
 ```
 

@@ -127,6 +127,8 @@ class PhotoOrganizer:
         
         # Lade Dateinamen-Pattern aus Konfiguration
         self.filename_patterns = self.load_filename_patterns()
+        # Lade default Geokoordinaten aus Konfiguration
+        self.location_cache = self.load_geo_cords()
         
         # EXIF-Statistiken
         self.exif_added_count = 0
@@ -141,7 +143,94 @@ class PhotoOrganizer:
             print(f"{script_type}-Script: {self.script_path}")
         if self.add_exif:
             print(f"EXIF-Hinzufügung: Aktiviert")
-    
+
+    def load_geo_cords(self) -> Dict[Tuple[float, float], str]:
+        """Lädt Geokoordinaten aus Konfigurationsdatei"""
+       
+        default_patterns = {
+            (47.269,8.846): "Duernten",
+            (48.341,10.906): "Augsburg",
+            (48.147,11.561): "Muenchen",
+            (48.151,11.462): "Muenchen",
+        }
+        project_cfg = os.environ.get('PROJECT_CFG')
+        if not project_cfg:
+            print("🔧 PROJECT_CFG nicht gesetzt, verwende Default-Pattern")
+            return default_patterns
+        
+        config_dir = Path(project_cfg)
+        geoconfig_file = config_dir / "geo_coords.cfg"
+
+        
+        if not geoconfig_file.exists():
+            # Erstelle Standard-Konfigurationsdatei
+            config_content = """# PhotoOrganizer geo Koordinaten Konfigurationsdatei
+# 
+# Diese Datei enthält zu den Angaben von Länge und Breite den entsprechenden Ort
+[geo_locations]
+47.269,8.846: Duernten
+48.341,10.906: Augsburg
+48.147,11.561: Muenchen
+48.151,11.462: Muenchen
+"""
+            self.create_default_config(geoconfig_file, config_content)
+            print(f"🔧 Standard-Config erstellt: {geoconfig_file}")
+        
+        try:
+            config = configparser.ConfigParser()
+            config.read(geoconfig_file, encoding='utf-8')
+            
+            if 'geo_locations' in config:
+                for key, location_name in config['geo_locations'].items():
+                    try:
+                        # Parse Koordinaten aus dem Key "lat,lon"
+                        lat_str, lon_str = key.split(',')
+                        lat = float(lat_str.strip())
+                        lon = float(lon_str.strip())
+                        
+                        # Füge zum Cache hinzu
+                        default_patterns[(lat, lon)] = location_name.strip()
+                        
+                    except ValueError as e:
+                        print(f"⚠️  Ungültiges Koordinatenformat in Config: '{key}' -> {e}")
+                        continue
+                
+                if default_patterns:
+                    print(f"🔧 {len(default_patterns)} Pattern aus Config geladen: {geoconfig_file}")
+                    return default_patterns
+                    
+        except Exception as e:
+            print(f"⚠️  Fehler beim Laden der Config: {e}")        
+            print("🔧 Verwende Default-Pattern")
+            return default_patterns
+
+    def save_geo_locations_to_config(self) -> None:
+        """
+        Alternative: Direkte String-Manipulation (einfachster Code).
+        Nur für geo_locations Sektion geeignet.
+        """
+
+        project_cfg = os.environ.get('PROJECT_CFG')       
+        config_dir = Path(project_cfg)
+        geoconfig_file = config_dir / "geo_coords.cfg"
+
+        try:
+            lines = ["[geo_locations]\n"]
+            
+            # Sortiere für konsistente Ausgabe
+            sorted_items = sorted(self.location_cache.items())
+            
+            for (lat, lon), location_name in sorted_items:
+                lines.append(f"{lat},{lon}: {location_name}\n")
+            
+            with open(geoconfig_file, 'w', encoding='utf-8') as f:
+                f.writelines(lines)
+            
+            print(f"✅ {len(self.location_cache)} Geo-Locations gespeichert: {geoconfig_file}")
+            
+        except Exception as e:
+            print(f"❌ Fehler beim Speichern: {e}")
+
     def load_filename_patterns(self) -> List[str]:
         """Lädt Dateinamen-Pattern aus Konfigurationsdatei"""
         # Default-Pattern falls Config nicht verfügbar
@@ -178,35 +267,7 @@ class PhotoOrganizer:
         
         if not config_file.exists():
             # Erstelle Standard-Konfigurationsdatei
-            self.create_default_config(config_file)
-            print(f"🔧 Standard-Config erstellt: {config_file}")
-        
-        try:
-            config = configparser.ConfigParser()
-            config.read(config_file, encoding='utf-8')
-            
-            if 'Filename_Patterns' in config:
-                patterns = []
-                for key, pattern in config['Filename_Patterns'].items():
-                    if pattern.strip():  # Überspringe leere Pattern
-                        patterns.append(pattern.strip())
-                
-                if patterns:
-                    print(f"🔧 {len(patterns)} Pattern aus Config geladen: {config_file}")
-                    return patterns
-                    
-        except Exception as e:
-            print(f"⚠️  Fehler beim Laden der Config: {e}")
-        
-        print("🔧 Verwende Default-Pattern")
-        return default_patterns
-    
-    def create_default_config(self, config_file: Path) -> None:
-        """Erstellt Standard-Konfigurationsdatei"""
-        config_dir = config_file.parent
-        config_dir.mkdir(parents=True, exist_ok=True)
-        
-        config_content = """# PhotoOrganizer Konfigurationsdatei
+            config_content = """# PhotoOrganizer Konfigurationsdatei
 # 
 # Diese Datei enthält Regex-Pattern für die Erkennung von Datum/Zeit in Dateinamen
 # Format: pattern_name = regex_pattern
@@ -238,6 +299,32 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
 # Eigene Pattern können hier hinzugefügt werden:
 # mein_format = (\\d{4})\\.(\\d{2})\\.(\\d{2})_(\\d{2})h(\\d{2})m(\\d{2})s
 """
+            self.create_default_config(config_file, config_content)
+            print(f"🔧 Standard-Config erstellt: {config_file}")
+        
+        try:
+            config = configparser.ConfigParser()
+            config.read(config_file, encoding='utf-8')
+            
+            if 'Filename_Patterns' in config:
+                patterns = []
+                for key, pattern in config['Filename_Patterns'].items():
+                    if pattern.strip():  # Überspringe leere Pattern
+                        patterns.append(pattern.strip())
+                
+                if patterns:
+                    print(f"🔧 {len(patterns)} Pattern aus Config geladen: {config_file}")
+                    return patterns
+                    
+        except Exception as e:
+            print(f"⚠️  Fehler beim Laden der Config: {e}")
+            print("🔧 Verwende Default-Pattern")
+            return default_patterns
+    
+    def create_default_config(self, config_file: Path, config_content) -> None:
+        """Erstellt Standard-Konfigurationsdatei"""
+        config_dir = config_file.parent
+        config_dir.mkdir(parents=True, exist_ok=True)
         
         try:
             with open(config_file, 'w', encoding='utf-8') as f:
@@ -534,7 +621,7 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
         self.move_commands = all_moves
         
         # Script in Datei schreiben
-        self.write_script_to_file(script_content, all_moves)
+        self.write_script_to_file(script_content)
     
     def generate_powershell_script(self, events: Dict[str, List[PhotoInfo]]) -> None:
         """Erzeugt PowerShell-Script für die Foto-Organisation"""
@@ -565,31 +652,31 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
         script_content.append("    if (Test-Path $SourceFile) {")
         script_content.append("        try {")
         script_content.append("            Move-Item -Path $SourceFile -Destination $TargetPath -Force")
-        script_content.append("            Write-Host \"  ✅ $(Split-Path $SourceFile -Leaf)\" -ForegroundColor Green")
+        script_content.append('            Write-Host "   $(Split-Path $SourceFile -Leaf)" -ForegroundColor Green')
         script_content.append("            $script:movedCount++")
         script_content.append("        }")
         script_content.append("        catch {")
-        script_content.append("            Write-Host \"  ❌ Fehler: $(Split-Path $SourceFile -Leaf)\" -ForegroundColor Red")
+        script_content.append('            Write-Host "[NOT OK] Fehler: $(Split-Path $SourceFile -Leaf)" -ForegroundColor Red')
         script_content.append("            $script:errorCount++")
         script_content.append("        }")
         script_content.append("    }")
         script_content.append("    else {")
-        script_content.append("        Write-Host \"  ❌ Nicht gefunden: $(Split-Path $SourceFile -Leaf)\" -ForegroundColor Red")
+        script_content.append('        Write-Host "[NOT OK] Nicht gefunden: $(Split-Path $SourceFile -Leaf)" -ForegroundColor Red')
         script_content.append("        $script:errorCount++")
         script_content.append("    }")
         script_content.append("}")
         script_content.append("")
         
-        script_content.append("Write-Host \"🚀 Starte Foto-Organisation...\" -ForegroundColor Blue")
-        script_content.append("Write-Host \"\"")
+        script_content.append('Write-Host "Starte Foto-Organisation..." -ForegroundColor Blue')
+        script_content.append('Write-Host ""')
         script_content.append("")
         
         # Wechsle ins Quellverzeichnis
         script_content.append("# Wechsle ins Quellverzeichnis")
-        source_escaped = str(self.source_dir).replace("'", "''")
-        script_content.append(f"Set-Location '{source_escaped}'")
-        script_content.append("Write-Host \"📁 Arbeitsverzeichnis: $(Get-Location)\" -ForegroundColor Yellow")
-        script_content.append("Write-Host \"\"")
+        source_escaped = self._escape_powershell_string(str(self.source_dir))
+        script_content.append(f"Set-Location {source_escaped}")
+        script_content.append('Write-Host "Arbeitsverzeichnis: $(Get-Location)" -ForegroundColor Yellow')
+        script_content.append('Write-Host ""')
         script_content.append("")
         
         # Sammle alle Move-Kommandos
@@ -599,17 +686,19 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
             if event_name == ".":
                 # Einzelne Dateien direkt ins Zielverzeichnis
                 target_folder = self.target_dir
-                script_content.append(f"# 📄 Einzelne Dateien -> Zielverzeichnis ({len(photos)} Dateien)")
-                script_content.append(f"Write-Host \"📄 Einzelne Dateien -> Zielverzeichnis ({len(photos)} Dateien)\" -ForegroundColor Blue")
+                safe_header = self._escape_powershell_string(f"📄 Einzelne Dateien -> Zielverzeichnis -{len(photos)} Dateien")
+                script_content.append(f"# 📄 Einzelne Dateien -> Zielverzeichnis -{len(photos)} Dateien")
+                script_content.append(f"Write-Host {safe_header} -ForegroundColor Blue")
             else:
                 # Event-Ordner
                 target_folder = self.target_dir / event_name
-                script_content.append(f"# 📁 {event_name}/ ({len(photos)} Dateien)")
-                script_content.append(f"Write-Host \"📁 {event_name}/ ({len(photos)} Dateien)\" -ForegroundColor Blue")
+                safe_header = self._escape_powershell_string(f"{event_name}/ - {len(photos)} Dateien")
+                script_content.append(f"# {event_name.replace('/', '_')}/ - {len(photos)} Dateien")
+                script_content.append(f"Write-Host {safe_header} -ForegroundColor Blue")
                 
                 # Erstelle Zielordner
-                target_escaped = str(target_folder).replace("'", "''")
-                script_content.append(f"New-Item -Path '{target_escaped}' -ItemType Directory -Force | Out-Null")
+                target_escaped = self._escape_powershell_string(str(target_folder))
+                script_content.append(f"New-Item -Path {target_escaped} -ItemType Directory -Force | Out-Null")
             
             # Move-Kommandos für diese Gruppe
             for photo in photos:
@@ -620,35 +709,44 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
                 
                 # Relative Pfade für einfachere Kommandos
                 rel_source = photo.filepath.relative_to(self.source_dir)
-                rel_source_escaped = str(rel_source).replace("'", "''")
-                target_escaped = str(target_path).replace("'", "''")
+                rel_source_escaped = self._escape_powershell_string(str(rel_source))
+                target_escaped = self._escape_powershell_string(str(target_path))
                 
                 # Funktionsaufruf
-                script_content.append(f"Move-PhotoFile '{rel_source_escaped}' '{target_escaped}'")
+                script_content.append(f"Move-PhotoFile {rel_source_escaped} {target_escaped}")
             
-            script_content.append("Write-Host \"\"")
+            script_content.append('Write-Host ""')
         
         # Script-Footer mit Statistiken
         script_content.append("")
         script_content.append("# Zusammenfassung")
-        script_content.append("Write-Host \"\"")
-        script_content.append("Write-Host \"=== ZUSAMMENFASSUNG ===\" -ForegroundColor Blue")
-        script_content.append("Write-Host \"✅ $movedCount Dateien erfolgreich verschoben\" -ForegroundColor Green")
+        script_content.append('Write-Host ""')
+        script_content.append('Write-Host "=== ZUSAMMENFASSUNG ===" -ForegroundColor Blue')
+        script_content.append('Write-Host "$movedCount Dateien erfolgreich verschoben" -ForegroundColor Green')
         script_content.append("if ($errorCount -gt 0) {")
-        script_content.append("    Write-Host \"❌ $errorCount Fehler aufgetreten\" -ForegroundColor Red")
+        script_content.append('    Write-Host "$errorCount Fehler aufgetreten" -ForegroundColor Red')
         script_content.append("    exit 1")
         script_content.append("}")
         script_content.append("else {")
-        script_content.append("    Write-Host \"🎉 Alle Dateien erfolgreich organisiert!\" -ForegroundColor Green")
+        script_content.append('    Write-Host "Alle Dateien erfolgreich organisiert!" -ForegroundColor Green')
         script_content.append("}")
         
         # Speichere alle Move-Kommandos für interne Verwendung
         self.move_commands = all_moves
         
         # Script in Datei schreiben
-        self.write_script_to_file(script_content, all_moves)
-    
-    def write_script_to_file(self, script_content: List[str], all_moves: List[Tuple[Path, Path]]) -> None:
+        self.write_script_to_file(script_content)
+
+    def _escape_powershell_string(self, text: str) -> str:
+        """
+        Escaped einen String für PowerShell korrekt.
+        Verwendet einfache Anführungszeichen für bessere Kompatibilität mit Unicode.
+        """
+        # Ersetze einfache Anführungszeichen durch doppelte einfache Anführungszeichen
+        escaped = text.replace("'", "''")
+        return f"'{escaped}'"
+
+    def write_script_to_file(self, script_content: List[str]) -> None:
         """Schreibt Script-Inhalt in Datei"""
         try:
             with open(self.script_path, 'w', encoding='utf-8') as f:
@@ -663,7 +761,6 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
             execution_cmd = f"powershell -ExecutionPolicy Bypass -File {self.script_path}" if self.powershell else f"bash {self.script_path}"
             
             print(f"\n🎯 {script_type}-Script erstellt: {self.script_path}")
-            print(f"   📊 {len(all_moves)} Move-Operationen geplant")
             print(f"   🔧 Ausführung mit: {execution_cmd}")
             print(f"   ⚠️  Das Script verschiebt die Dateien tatsächlich!")
             
@@ -1043,6 +1140,7 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
         # Cache aktualisieren falls vorhanden
         if self.cache_file:
             self.save_cache()
+            self.save_geo_locations_to_config()
     
     def process_single_file(self, filepath: Path) -> Optional[PhotoInfo]:
         """Verarbeitet eine einzelne Datei (für parallele Ausführung) - OHNE Geocoding"""
@@ -1332,8 +1430,7 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
         if self.generate_script:
             self.generate_shell_script(events)
             if dry_run:
-                print(f"\n💡 Dry-Run abgeschlossen. Verwende das generierte Script:")
-                print(f"   bash {self.script_path}")
+                print(f"\n💡 Dry-Run abgeschlossen.")
                 return
         
         if dry_run:

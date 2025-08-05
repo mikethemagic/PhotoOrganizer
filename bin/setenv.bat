@@ -2,6 +2,7 @@
 
 set PROJECT=C:\10-Develop\gitrepos\PhotoOrganiser
 set PROJECT_BIN=%PROJECT%\bin
+set PROJECT_CFG=%PROJECT%\cfg
 set PROJECT_DATA=%PROJECT%\data
 set PROJECT_SCRIPTS=%PROJECT%\scripts
 set PROJECT_CACHE=%PROJECT%\cache

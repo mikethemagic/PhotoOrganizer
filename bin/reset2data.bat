@@ -1,5 +1,5 @@
 @echo off
-REM Reset PDFs - Move all jpg files from ergebnisse back to data folder
+REM Reset JPGS - Move all jpg files from ergebnisse back to data folder
 REM This allows reprocessing of the last run
 
 setlocal enabledelayedexpansion
@@ -34,9 +34,18 @@ if not exist "%PROJECT_DATA%" (
     mkdir "%PROJECT_DATA%"
 )
 
-REM Count PDFs to be moved
+REM Count JPGS to be moved
 set /a count=0
 for /r "%PROJECT_WORK%" %%f in (*.jpg) do (
+    set /a count+=1
+)
+for /r "%PROJECT_WORK%" %%f in (*.mov) do (
+    set /a count+=1
+)
+for /r "%PROJECT_WORK%" %%f in (*.png) do (
+    set /a count+=1
+)
+for /r "%PROJECT_WORK%" %%f in (*.mp4) do (
     set /a count+=1
 )
 
@@ -47,10 +56,10 @@ if %count%==0 (
     exit /b 0
 )
 
-echo Found %count% jpg files to move back to data folder.
+echo Found %count% jpg/mov/png files to move back to data folder.
 echo.
 echo WARNING: This will move all jpg files from customer folders back to the data folder.
-echo Any existing PDFs in the data folder may be overwritten.
+echo Any existing JPGS in the data folder may be overwritten.
 echo.
 set /p confirm="Continue? (y/N): "
 
@@ -64,7 +73,7 @@ echo.
 echo Moving jpg files...
 echo.
 
-REM Move all PDFs back to data folder
+REM Move all JPGS back to data folder
 set /a moved=0
 for /r "%PROJECT_WORK%" %%f in (*.jpg) do (
     echo Moving: %%~nxf
@@ -75,12 +84,45 @@ for /r "%PROJECT_WORK%" %%f in (*.jpg) do (
         echo ERROR: Failed to move %%~nxf
     )
 )
+set /a movedpng=0
+for /r "%PROJECT_WORK%" %%f in (*.png) do (
+    echo Moving: %%~nxf
+    move "%%f" "%PROJECT_DATA%\" >nul 2>&1
+    if !errorlevel! equ 0 (
+        set /a movedpng+=1
+    ) else (
+        echo ERROR: Failed to move %%~nxf
+    )
+)
+set /a movedmov=0
+for /r "%PROJECT_WORK%" %%f in (*.mov) do (
+    echo Moving: %%~nxf
+    move "%%f" "%PROJECT_DATA%\" >nul 2>&1
+    if !errorlevel! equ 0 (
+        set /a movedmov+=1
+    ) else (
+        echo ERROR: Failed to move %%~nxf
+    )
+)
+set /a movemp4=0
+for /r "%PROJECT_WORK%" %%f in (*.mp4) do (
+    echo Moving: %%~nxf
+    move "%%f" "%PROJECT_DATA%\" >nul 2>&1
+    if !errorlevel! equ 0 (
+        set /a movemp4+=1
+    ) else (
+        echo ERROR: Failed to move %%~nxf
+    )
+)
 
 echo.
 echo ====================================
 echo RESET COMPLETE
 echo ====================================
 echo Moved %moved% jpg files back to data folder.
+echo Moved %movedpng% png files back to data folder.
+echo Moved %movedmov% mov files back to data folder.
+echo Moved %movemp4% mp4 files back to data folder.
 echo You can now run the organizer again.
 echo.
 

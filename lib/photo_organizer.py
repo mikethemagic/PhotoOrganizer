@@ -6,18 +6,25 @@ Organisiert Fotos in Ordnerstrukturen: YYYY/MM-DD/ oder YYYY/Event_YYYY-MM-DD_bi
 
 import os
 import shutil
-import hashlib
 import json
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Set
 from dataclasses import dataclass
-from collections import defaultdict
+from collections import defaultdict, Counter
 import math
 import threading
-import configparser
-import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Import utilities
+from utils import (
+    normalize_path, validate_file, ensure_directory_exists,
+    clean_filename, clean_location_name as clean_location_name_util,
+    get_file_hash, escape_bash_path, escape_powershell_path,
+    get_timestamp as get_timestamp_util, get_most_common_items,
+    write_json_file, read_json_file, write_text_file
+)
 
 try:
     from PIL import Image
@@ -30,10 +37,15 @@ except ImportError:
 
 try:
     import subprocess
+    from static_ffmpeg import run
+    # Get paths to bundled ffmpeg/ffprobe binaries
+    ffmpeg_path, ffprobe_path = run.get_or_fetch_platform_executables_else_raise()
     FFPROBE_AVAILABLE = True
+    FFPROBE_PATH = ffprobe_path
 except ImportError:
     FFPROBE_AVAILABLE = False
-    print("Warnung: ffprobe nicht verfügbar. Video-Metadaten werden nicht extrahiert.")
+    FFPROBE_PATH = 'ffprobe'  # Fallback to system ffprobe
+    print("Warnung: static-ffmpeg nicht verfügbar. Versuche System-ffprobe zu verwenden.")
 
 try:
     import requests
@@ -381,29 +393,15 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
     
     def get_timestamp(self) -> str:
         """Generiert Zeitstempel für eindeutige Script-Namen"""
-        return datetime.now().strftime('%Y%m%d_%H%M%S')
-    
+        return get_timestamp_util()
+
     def clean_filename(self, name: str) -> str:
         """Bereinigt String für Verwendung in Dateinamen"""
-        import re
-        # Nur alphanumerische Zeichen, Unterstriche und Bindestriche
-        cleaned = re.sub(r'[^\w\-_]', '_', name)
-        # Mehrfache Unterstriche reduzieren
-        cleaned = re.sub(r'_+', '_', cleaned)
-        # Auf sinnvolle Länge kürzen
-        return cleaned[:20]
-        
+        return clean_filename(name, max_length=20)
+
     def get_file_hash(self, filepath: Path) -> str:
         """Berechnet SHA-256 Hash einer Datei für Duplikat-Erkennung"""
-        hash_sha256 = hashlib.sha256()
-        try:
-            with open(filepath, "rb") as f:
-                for chunk in iter(lambda: f.read(4096), b""):
-                    hash_sha256.update(chunk)
-            return hash_sha256.hexdigest()
-        except Exception as e:
-            print(f"Fehler beim Hash-Berechnen für {filepath}: {e}")
-            return ""
+        return get_file_hash(filepath)
     
     def get_datetime_from_filename(self, filepath: Path) -> Optional[datetime]:
         """Extrahiert Datum/Zeit aus Dateinamen (Pattern aus Konfiguration)"""
@@ -448,8 +446,8 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
                 self.exif_skipped_count += 1
                 return False
             
-            # Lade Bild
-            with Image.open(filepath) as img:
+            # Lade Bild - explicitly convert Path to string to handle special characters
+            with Image.open(str(filepath)) as img:
                 # Hole existierende EXIF-Daten oder erstelle neue
                 exif_dict = img.getexif()
                 
@@ -485,7 +483,8 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
     
     def escape_shell_path(self, path: Path) -> str:
         """Escapet Pfade für sichere Shell-Verwendung"""
-        return f"'{str(path).replace(chr(39), chr(39) + chr(92) + chr(39) + chr(39))}'"
+        shell = 'powershell' if self.powershell else 'bash'
+        return escape_shell_path(str(path), shell=shell)
     
     def generate_shell_script(self, events: Dict[str, List[PhotoInfo]]) -> None:
         """Erzeugt Shell-Script für die Foto-Organisation"""
@@ -772,8 +771,9 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
         try:
             if filepath.suffix.lower() in self.video_extensions:
                 return self.get_video_datetime(filepath)
-            
-            with Image.open(filepath) as img:
+
+            # Explicitly convert Path to string to handle special characters properly
+            with Image.open(str(filepath)) as img:
                 exif = img._getexif()
                 if exif:
                     for tag_id, value in exif.items():
@@ -815,9 +815,9 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
         """Extrahiert Datum/Zeit aus Video-Metadaten mit ffprobe"""
         if not FFPROBE_AVAILABLE:
             return None
-            
+
         try:
-            cmd = ['ffprobe', '-v', 'quiet', '-print_format', 'json', '-show_format', str(filepath)]
+            cmd = [FFPROBE_PATH, '-v', 'quiet', '-print_format', 'json', '-show_format', str(filepath)]
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode == 0:
                 data = json.loads(result.stdout)
@@ -839,8 +839,9 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
         try:
             if filepath.suffix.lower() in self.video_extensions:
                 return None  # GPS aus Videos ist komplexer
-                
-            with Image.open(filepath) as img:
+
+            # Explicitly convert Path to string to handle special characters properly
+            with Image.open(str(filepath)) as img:
                 exif = img._getexif()
                 if exif:
                     gps_info = exif.get(34853)  # GPS IFD
@@ -952,26 +953,7 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
     
     def clean_location_name(self, location: str) -> str:
         """Bereinigt Ortsnamen für Verwendung in Dateinamen"""
-        # Entferne/ersetze problematische Zeichen für Dateinamen
-        import re
-        
-        # Umlaute und Sonderzeichen normalisieren
-        replacements = {
-            'ä': 'ae', 'ö': 'oe', 'ü': 'ue', 'ß': 'ss',
-            'Ä': 'Ae', 'Ö': 'Oe', 'Ü': 'Ue'
-        }
-        
-        for old, new in replacements.items():
-            location = location.replace(old, new)
-        
-        # Nur alphanumerische Zeichen, Bindestriche und Unterstriche
-        location = re.sub(r'[^\w\-_\s]', '', location)
-        # Leerzeichen durch Unterstriche ersetzen
-        location = re.sub(r'\s+', '_', location.strip())
-        # Mehrfache Unterstriche reduzieren
-        location = re.sub(r'_+', '_', location)
-        
-        return location[:30]  # Max. 30 Zeichen für Ordnernamen
+        return clean_location_name_util(location, max_length=30)
     
     def save_cache(self) -> None:
         """Speichert Photo-Daten in JSON-Cache"""
@@ -1046,10 +1028,18 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
             
             # Photo-Daten laden
             self.photos = []
+            skipped_files = 0
             for photo_data in cache_data.get('photos', []):
                 try:
+                    filepath = Path(photo_data['filepath'])
+
+                    # Skip files that no longer exist
+                    if not filepath.exists():
+                        skipped_files += 1
+                        continue
+
                     photo = PhotoInfo(
-                        filepath=Path(photo_data['filepath']),
+                        filepath=filepath,
                         datetime=datetime.fromisoformat(photo_data['datetime']),
                         gps_coords=tuple(photo_data['gps_coords']) if photo_data['gps_coords'] else None,
                         location_name=photo_data.get('location_name'),
@@ -1079,7 +1069,9 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
             cache_created = metadata.get('created', 'unbekannt')
             print(f"✅ Cache geladen (erstellt: {cache_created}):")
             print(f"  📸 {len(self.photos)} Fotos/Videos")
-            print(f"  🗑️  {len(self.duplicates)} Duplikate") 
+            if skipped_files > 0:
+                print(f"  ⚠️  {skipped_files} Dateien aus Cache übersprungen (nicht mehr vorhanden)")
+            print(f"  🗑️  {len(self.duplicates)} Duplikate")
             print(f"  🗺️  {len(self.location_cache)} Orte im GPS-Cache")
             return True
             
@@ -1188,7 +1180,8 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
         # Sammle alle zu verarbeitenden Dateien
         all_files = []
         for filepath in self.source_dir.rglob('*'):
-            if filepath.is_file() and filepath.suffix.lower() in self.supported_extensions:
+            # Validate: is_file() checks during scan, exists() prevents race conditions
+            if filepath.is_file() and filepath.exists() and filepath.suffix.lower() in self.supported_extensions:
                 all_files.append(filepath)
         
         print(f"📁 Gefunden: {len(all_files)} Dateien zum Verarbeiten")
@@ -1495,10 +1488,14 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
 def main():
     """Hauptfunktion mit Beispiel-Verwendung"""
     import argparse
-    
+
+    # Get defaults from environment variables
+    default_source = os.environ.get('PROJECT_DATA', './data')
+    default_target = os.environ.get('PROJECT_WORK', './results')
+
     parser = argparse.ArgumentParser(description='Automatische Foto-Organisation')
-    parser.add_argument('source', help='Quellverzeichnis mit Fotos')
-    parser.add_argument('target', help='Zielverzeichnis für organisierte Fotos')
+    parser.add_argument('source', nargs='?', default=default_source, help=f'Quellverzeichnis mit Fotos (default: {default_source})')
+    parser.add_argument('target', nargs='?', default=default_target, help=f'Zielverzeichnis für organisierte Fotos (default: {default_target})')
     parser.add_argument('--execute', action='store_true', help='Dateien tatsächlich verschieben (ohne --execute nur Vorschau)')
     parser.add_argument('--same-day-hours', type=int, default=12, help='Stunden für gleichen Tag (default: 12)')
     parser.add_argument('--event-max-days', type=int, default=3, help='Max. Tage für Event (default: 3)')

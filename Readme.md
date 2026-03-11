@@ -1,11 +1,540 @@
-# PhotoOrganizer - Dokumentation
+# PhotoOrganizer
 
-Ein intelligenter Python-basierter Foto-Organizer, der Fotos automatisch nach Datum, Ort und Events sortiert.
-Ich hatte einen riesigen Stapel von automatisch gesicherten Fotos, die ich im Ordner etwas thematisch und nach Jahr und Ort zusammenfassen wollte. 
-Allerdings mache ich das bei mehr als 1000 Dateien nicht mehr von Hand. 
-Das Python Programm unterstützt einen dabei etwas
+**Automatic photo and video organization based on timestamps and GPS data.**
 
-## 🐧 Linux/Mac Dokumentation
+Intelligently organize thousands of photos into structured folders by date, location, and events. Never manually sort photos again!
+
+## Why PhotoOrganizer?
+
+I had a massive pile of automatically backed-up photos from phones, cameras, and cloud storage that needed organizing by theme, year, and location. With 1000+ files, manual sorting is impractical. This tool does it automatically using:
+
+- **EXIF metadata** from cameras
+- **Video metadata** from MP4/MOV files
+- **Filenames** (IMG-20240315-WA0001.jpg)
+- **GPS coordinates** for location-based grouping
+- **Smart event detection** to group related photos
+
+## Quick Start (60 seconds)
+
+### 1. Install Dependencies
+
+**Windows:**
+```cmd
+bin\install_py.bat
+```
+
+**Linux/Mac:**
+```bash
+bash bin/install_py.sh
+```
+
+This creates a virtual environment and installs all required packages (Pillow, requests, static-ffmpeg).
+
+### 2. Put Photos in `data/` Folder
+
+```cmd
+# Copy all your photos to the data directory
+copy C:\phone_backup\*.jpg data\
+copy C:\phone_backup\*.mp4 data\
+```
+
+Or simply drag-and-drop your photos into the `data/` folder.
+
+### 3. Analyze Your Photos
+
+**Windows:**
+```cmd
+bin\analyse.bat
+```
+
+**Linux/Mac:**
+```bash
+bash bin/analyse.sh
+```
+
+This shows you:
+- How many photos/videos found
+- EXIF availability
+- GPS data availability
+- Date ranges
+- **Cached city names** from GPS coordinates
+- **Missing geolocations** that need geocoding
+- Recommended organization settings
+
+**Tip:** Add `--add-missing-geolocations` to automatically geocode coordinates:
+```cmd
+bin\analyse.bat --add-missing-geolocations
+```
+
+### 4. Organize Your Photos
+
+**Preview first (recommended):**
+```cmd
+bin\organize.bat data results
+```
+
+**Execute the organization:**
+```cmd
+bin\organize.bat data results --execute
+```
+
+Your photos are now organized in `results/` by year, date, and location!
+
+### 5. How to Redo Organization
+
+If you want to try different settings or start over:
+
+**Windows:**
+```cmd
+bin\reset2data.bat
+```
+
+**Linux/Mac:**
+```bash
+bash bin/reset2data.sh
+```
+
+This moves all files from `results/` back to `data/`, allowing you to re-run with different parameters.
+
+---
+
+## Features
+
+### Core Features
+- ✅ **Smart Date Detection**: Extracts dates from EXIF, video metadata, or filenames
+- ✅ **GPS-Based Grouping**: Groups photos by location using GPS coordinates
+- ✅ **Event Detection**: Automatically creates events based on time + location proximity
+- ✅ **Duplicate Detection**: SHA-256 hash-based duplicate identification
+- ✅ **Video Support**: Full metadata extraction from MP4, MOV, AVI files (via ffprobe)
+- ✅ **Multi-format**: JPG, PNG, TIFF, MP4, MOV, AVI, and more
+
+### Advanced Features
+- 📍 **Reverse Geocoding**: GPS coordinates → City names (via Nominatim)
+- 📝 **EXIF Enhancement**: Adds EXIF timestamps to files that only have dates in filenames
+- 💾 **Smart Caching**: Metadata and geocoding cache for fast re-runs
+- 🔄 **Parallel Processing**: Multi-threaded for fast processing of large libraries
+- 📜 **Script Generation**: Creates bash/PowerShell scripts for deferred execution
+- 🔍 **Preview Mode**: See what will happen before moving files
+
+---
+
+## Workflow
+
+### Typical Photo Organization Workflow
+
+```
+┌─────────────────┐
+│  1. Put photos  │
+│   in data/      │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  2. Analyze     │
+│  bin\analyse    │
+│                 │
+│  Shows stats &  │
+│  recommendations│
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  3. Preview     │
+│  bin\organize   │
+│  (no --execute) │
+└────────┬────────┘
+         │
+         ▼
+    ┌────────┐
+    │ Good?  │──No──┐
+    └───┬────┘      │
+        │ Yes       │
+        ▼           ▼
+┌─────────────┐  ┌──────────────┐
+│ 4. Execute  │  │ Adjust       │
+│  --execute  │  │ parameters   │
+└─────────────┘  └──────┬───────┘
+                        │
+                        └──────┐
+                               ▼
+                        ┌──────────────┐
+                        │ 5. Reset     │
+                        │ reset2data   │
+                        └──────┬───────┘
+                               │
+                               └─────────► Back to step 3
+```
+
+---
+
+## Folder Structure After Organization
+
+```
+results/
+├── 2023/
+│   ├── 01-15/                          # Single day photos
+│   │   ├── photo1.jpg
+│   │   └── photo2.jpg
+│   ├── Berlin_2023-03-10_bis_2023-03-12/  # Multi-day event with location
+│   │   ├── photo1.jpg
+│   │   ├── photo2.jpg
+│   │   └── video1.mp4
+│   └── Paris_2023-05-20_bis_2023-05-25/
+│       └── ...
+├── 2024/
+│   ├── 05-10/
+│   │   └── screenshot.png
+│   └── New_York_2024-12-01_bis_2024-12-05/
+│       └── ...
+└── Duplicates/
+    └── duplicate_photo.jpg
+```
+
+---
+
+## Command Reference
+
+### Analyze Command
+
+**Basic analysis:**
+```cmd
+bin\analyse.bat [data_dir] [target_dir]
+```
+
+**Quick analysis (file stats only, faster):**
+```cmd
+bin\analyse.bat --quick
+```
+
+**Geocode missing locations and save to config:**
+```cmd
+bin\analyse.bat --add-missing-geolocations
+```
+
+**Output includes:**
+- File counts and types
+- Metadata availability (EXIF, GPS, datetime)
+- **Cached city names** from previous geocoding
+- **Coordinates without location names** that need geocoding
+- Date ranges
+- Organization preview
+- Recommended settings
+
+### Organize Command
+
+**Basic syntax:**
+```cmd
+bin\organize.bat <source> <target> [options]
+```
+
+**Common options:**
+| Option | Description |
+|--------|-------------|
+| `--execute` | Actually move files (default is preview only) |
+| `--generate-script` | Create a bash/PowerShell script instead of moving files |
+| `--addexif` | Add EXIF timestamps to files that only have dates in filenames |
+| `--no-geocoding` | Skip GPS geocoding (faster) |
+| `--powershell` | Generate PowerShell script instead of bash (Windows) |
+| `--min-event-photos 5` | Minimum photos to create an event folder (default: 10) |
+| `--same-day-hours 12` | Hours to consider as "same day" (default: 12) |
+| `--event-max-days 3` | Maximum days for a single event (default: 3) |
+| `--geo-radius 10` | GPS radius in km for event grouping (default: 10) |
+| `--max-workers 8` | Number of parallel threads (default: auto) |
+
+**Examples:**
+
+Preview organization:
+```cmd
+bin\organize.bat data results
+```
+
+Execute with EXIF enhancement:
+```cmd
+bin\organize.bat data results --execute --addexif
+```
+
+Fast organization without GPS:
+```cmd
+bin\organize.bat data results --execute --no-geocoding
+```
+
+Generate script for later execution:
+```cmd
+bin\organize.bat data results --generate-script
+# Review: scripts\photo_move_script_20240315_120000.bat
+# Execute: scripts\photo_move_script_20240315_120000.bat
+```
+
+Custom event settings:
+```cmd
+bin\organize.bat data results --execute --min-event-photos 5 --event-max-days 2 --geo-radius 5
+```
+
+### Reset Command
+
+**Move all files back to data folder:**
+```cmd
+bin\reset2data.bat
+```
+
+This allows you to re-organize with different settings.
+
+---
+
+## Configuration
+
+### GPS Location Cache (`cfg/geo_coords.cfg`)
+
+Pre-configured or cached GPS coordinates with city names:
+
+```ini
+[geo_locations]
+52.5200,13.4050: Berlin
+48.8566,2.3522: Paris
+40.7128,-74.0060: New York
+```
+
+**Benefits:**
+- Speeds up geocoding by avoiding API calls
+- Persists location names across runs
+- Can be manually edited to fix incorrect locations
+- Automatically updated with `--add-missing-geolocations`
+
+**How to populate:**
+1. Run `bin\analyse.bat --add-missing-geolocations` to auto-geocode
+2. Or manually add coordinates in the format above
+
+### Environment Variables (`bin/setenv.bat` or `bin/setenv.sh`)
+
+Configure default paths:
+
+```bash
+PROJECT_DATA=c:\path\to\your\photos     # Input folder
+PROJECT_WORK=c:\path\to\results          # Output folder
+PROJECT_CACHE=c:\path\to\cache           # Metadata cache
+PROJECT_SCRIPTS=c:\path\to\scripts       # Generated scripts
+PROJECT_CFG=c:\path\to\cfg               # Config files
+```
+
+---
+
+## Troubleshooting
+
+### Video Metadata Errors
+
+**Problem:** `[WinError 2] Das System kann die angegebene Datei nicht finden` for video files
+
+**Solution:**
+```bash
+pip install static-ffmpeg
+```
+
+The tool now automatically uses the bundled ffprobe from this package.
+
+### Missing File Errors
+
+**Problem:** `EXIF-Fehler bei file.jpg: [Errno 2] No such file or directory`
+
+**Cause:** Stale cache or files deleted between scanning and processing
+
+**Solution:** The tool now automatically skips missing files. Delete cache to force fresh scan:
+```cmd
+del cache\photo_cache_*.json
+```
+
+### Geocoding Issues
+
+**Problem:** Geocoding is slow or fails
+
+**Solutions:**
+1. Use `--no-geocoding` to skip it:
+   ```cmd
+   bin\organize.bat data results --no-geocoding
+   ```
+
+2. Pre-populate `cfg/geo_coords.cfg` with known locations
+
+3. Use `bin\analyse.bat --add-missing-geolocations` to geocode incrementally
+
+### Too Many Small Events
+
+**Problem:** Creating too many small event folders
+
+**Solution:** Increase minimum event size:
+```cmd
+bin\organize.bat data results --min-event-photos 20
+```
+
+### Events Too Large
+
+**Problem:** Events spanning too many days or locations
+
+**Solution:** Use stricter parameters:
+```cmd
+bin\organize.bat data results --event-max-days 1 --geo-radius 2
+```
+
+---
+
+## Supported File Formats
+
+**Images:** `.jpg`, `.jpeg`, `.png`, `.tiff`, `.tif`
+
+**Videos:** `.mp4`, `.mov`, `.avi`, `.vid`
+
+---
+
+## Installation Details
+
+### Requirements
+
+- **Python 3.7+**
+- **Pillow** (image processing and EXIF)
+- **requests** (geocoding API)
+- **static-ffmpeg** (video metadata extraction)
+
+### Manual Installation
+
+```bash
+# Install dependencies
+pip install -r lib/requirements.txt
+
+# Or install individually
+pip install Pillow>=8.0.0 requests>=2.25.0 static-ffmpeg>=2.5
+```
+
+---
+
+## Advanced Usage
+
+### Batch Processing Multiple Folders
+
+**Windows:**
+```cmd
+@echo off
+for /D %%S in (D:\Photos\*) do (
+    echo Processing: %%S
+    bin\organize.bat "%%S" D:\Organized --execute
+)
+```
+
+**Linux/Mac:**
+```bash
+#!/bin/bash
+for source in /media/*/DCIM /backup/phone_*; do
+    if [[ -d "$source" ]]; then
+        echo "Processing: $source"
+        bash bin/organize.sh "$source" /nas/photos --execute
+    fi
+done
+```
+
+### Cache Sharing
+
+The cache is based on the source directory, so you can organize the same photos to different targets using the same cache:
+
+```cmd
+bin\organize.bat data backup1 --generate-script
+bin\organize.bat data backup2 --generate-script  # Reuses cache
+bin\organize.bat data nas --generate-script      # Reuses cache
+```
+
+### Testing Different Parameters
+
+```cmd
+# Test different event sizes
+bin\organize.bat data test1 --min-event-photos 5
+bin\organize.bat data test2 --min-event-photos 15
+bin\organize.bat data test3 --min-event-photos 25
+
+# Test different GPS radii
+bin\organize.bat data test_5km --geo-radius 5
+bin\organize.bat data test_20km --geo-radius 20
+```
+
+---
+
+## Tips & Best Practices
+
+1. **Always analyze first** - Run `bin\analyse.bat` to understand your collection
+2. **Use preview mode** - Never use `--execute` on first run
+3. **Keep backups** - Always keep originals safe
+4. **Start small** - Test with a subset of photos first
+5. **Check duplicates folder** - Review before deleting
+6. **Leverage cache** - Reuse cache when trying different organization settings
+7. **Manual review** - The tool is smart but not perfect - review results
+
+---
+
+## FAQ
+
+**Q: Can I organize photos already in subfolders?**
+A: Yes, the tool recursively scans all subfolders.
+
+**Q: What happens to duplicates?**
+A: Duplicates (same file hash) are moved to `Duplicates/` folder.
+
+**Q: Can I undo organization?**
+A: Yes, use `bin\reset2data.bat` to move all files back.
+
+**Q: Does it modify my photos?**
+A: Only if you use `--addexif`. Otherwise files are only moved, not modified.
+
+**Q: How accurate is event detection?**
+A: Adjust `--same-day-hours`, `--event-max-days`, and `--geo-radius` for your needs.
+
+**Q: Can I run on network drives?**
+A: Yes, but may be slower. Consider using `--max-workers 2` for reliability.
+
+**Q: What if I don't have GPS data?**
+A: Use `--no-geocoding` to skip GPS-based grouping. Events will be based on time only.
+
+---
+
+## Project Structure
+
+```
+PhotoOrganiser/
+├── bin/
+│   ├── analyse.bat/sh      # Analyze photos and show stats
+│   ├── organize.bat/sh     # Organize photos
+│   ├── reset2data.bat/sh   # Reset organization
+│   ├── setenv.bat/sh       # Environment configuration
+│   └── install_py.bat/sh   # Install dependencies
+├── lib/
+│   ├── photo_organizer.py  # Main organizer module
+│   ├── analyze_photos.py   # Analysis tool
+│   └── requirements.txt    # Python dependencies
+├── data/                   # Your photos go here
+├── results/                # Organized output
+├── cache/                  # Metadata cache
+├── scripts/                # Generated scripts
+└── cfg/                    # Configuration
+    └── geo_coords.cfg      # GPS location cache
+```
+
+---
+
+## Contributing
+
+Contributions welcome! Please:
+- Follow existing code style
+- Add tests for new features
+- Update documentation
+
+---
+
+## License
+
+Provided as-is for personal and educational use. All processing is done locally (except geocoding which uses Nominatim API).
+
+---
+
+**Happy organizing! 📸**
+
+---
+
+## 🐧 Erweiterte Linux/Mac Dokumentation (Deutsch)
 
 ### 🚀 Quickstart für Linux/Mac
 

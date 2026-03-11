@@ -23,14 +23,152 @@ sys.path.insert(0, str(lib_dir))
 
 from photo_organizer import PhotoOrganizer, PILLOW_AVAILABLE
 
-def analyze_photos(data_dir="./data", target_dir="./results"):
-    """Analyze all photos and provide statistics"""
+def analyze_photos_quick(data_dir=None):
+    """Quick analysis of photo files without detailed EXIF processing"""
+
+    # Use environment variable as default
+    if data_dir is None:
+        data_dir = os.environ.get('PROJECT_DATA', './data')
+
+    data_path = Path(data_dir).resolve()
+
+    print("\n" + "=" * 100)
+    print("QUICK PHOTO ANALYSIS")
+    print("=" * 100)
+
+    if not data_path.exists():
+        print(f"Error: Data directory not found: {data_path}")
+        return
+
+    print(f"\nScanning: {data_path}\n")
+
+    # File statistics
+    stats = {
+        'total_files': 0,
+        'by_extension': defaultdict(int),
+        'total_size_mb': 0,
+        'photos': 0,
+        'videos': 0,
+        'with_datetime_pattern': 0,
+        'sample_files': []
+    }
+
+    # Supported extensions
+    photo_exts = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp', '.raw', '.heic'}
+    video_exts = {'.mp4', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.m4v', '.webm'}
+
+    # Scan files
+    for filepath in sorted(data_path.rglob('*')):
+        # Validate: is_file() checks during scan, exists() prevents race conditions
+        if not filepath.is_file() or not filepath.exists():
+            continue
+
+        ext = filepath.suffix.lower()
+        if ext not in photo_exts and ext not in video_exts:
+            continue
+
+        stats['total_files'] += 1
+        stats['by_extension'][ext] += 1
+        stats['total_size_mb'] += filepath.stat().st_size / (1024 * 1024)
+
+        if ext in photo_exts:
+            stats['photos'] += 1
+        elif ext in video_exts:
+            stats['videos'] += 1
+
+        # Check for datetime pattern in filename
+        name = filepath.stem
+        if any(c.isdigit() for c in name):
+            stats['with_datetime_pattern'] += 1
+
+        # Keep first few samples
+        if len(stats['sample_files']) < 5:
+            stats['sample_files'].append(filepath.name)
+
+    # Display results
+    print(f"Total files found: {stats['total_files']}")
+    print(f"Total size: {stats['total_size_mb']:.2f} MB\n")
+
+    print("File types:")
+    for ext in sorted(stats['by_extension'].keys()):
+        count = stats['by_extension'][ext]
+        pct = 100 * count / stats['total_files'] if stats['total_files'] > 0 else 0
+        print(f"  {ext}: {count} ({pct:.1f}%)")
+
+    print(f"\nBreakdown:")
+    print(f"  Photos: {stats['photos']} ({100*stats['photos']/stats['total_files']:.1f}%)" if stats['total_files'] > 0 else "  Photos: 0")
+    print(f"  Videos: {stats['videos']} ({100*stats['videos']/stats['total_files']:.1f}%)" if stats['total_files'] > 0 else "  Videos: 0")
+
+    print(f"\nMetadata:")
+    pct_datetime = 100 * stats['with_datetime_pattern'] / stats['total_files'] if stats['total_files'] > 0 else 0
+    print(f"  Files with datetime pattern in name: {stats['with_datetime_pattern']} ({pct_datetime:.1f}%)")
+
+    if stats['sample_files']:
+        print(f"\nSample filenames:")
+        for name in stats['sample_files']:
+            print(f"  - {name}")
+
+    print("\n" + "=" * 100)
+    print("RECOMMENDATIONS")
+    print("=" * 100)
+
+    recommendations = []
+    if pct_datetime > 90:
+        recommendations.append("High datetime pattern in filenames - good for organization")
+    elif pct_datetime > 50:
+        recommendations.append("Most files have datetime in filename - this will help with sorting")
+    else:
+        recommendations.append("WARNING: Less than 50% of files have datetime info in filename")
+
+    if stats['videos'] > stats['photos'] * 0.1:
+        recommendations.append(f"Many videos detected ({stats['videos']}) - might need video metadata extraction")
+
+    print("\nAnalysis:")
+    for rec in recommendations:
+        print(f"  - {rec}")
+
+    print("\n" + "-" * 100)
+    print("SUGGESTED COMMAND FOR ORGANIZATION")
+    print("-" * 100)
+
+    try:
+        rel_path = data_path.relative_to(data_path.parent.parent)
+        cmd_path = str(rel_path).replace('\\', '/').strip('.')
+    except:
+        cmd_path = str(data_path)
+
+    cmd_switches = []
+    if stats['videos'] > 0:
+        cmd_switches.append("--addexif")
+
+    if cmd_switches:
+        cmd = f"organize.bat {cmd_path} results {' '.join(cmd_switches)}"
+    else:
+        cmd = f"organize.bat {cmd_path} results"
+
+    print(f"\n{cmd}\n")
+    print("Options:")
+    print("  - Add --execute to actually move files")
+    print("  - Add --generate-script to create a .bat/.sh for later execution")
+    print("  - Add --no-geocoding if you don't have GPS data or want faster processing")
+
+    print("\n" + "=" * 100 + "\n")
+
+
+def analyze_photos(data_dir=None, target_dir=None, add_missing_geolocations=False):
+    """Detailed analysis with full EXIF/metadata processing"""
+
+    # Use environment variables as defaults
+    if data_dir is None:
+        data_dir = os.environ.get('PROJECT_DATA', './data')
+    if target_dir is None:
+        target_dir = os.environ.get('PROJECT_WORK', './results')
 
     data_path = Path(data_dir).resolve()
     target_path = Path(target_dir).resolve()
 
     print("\n" + "=" * 100)
-    print("PHOTO ANALYSIS REPORT")
+    print("PHOTO ANALYSIS REPORT (DETAILED)")
     print("=" * 100)
 
     if not data_path.exists():
@@ -38,11 +176,12 @@ def analyze_photos(data_dir="./data", target_dir="./results"):
         return
 
     # Create organizer with fast scanning (max 4 workers for faster analysis)
+    # Enable geocoding if --add-missing-geolocations is set
     try:
         organizer = PhotoOrganizer(
             source_dir=str(data_path),
             target_dir=str(target_path),
-            use_geocoding=False,  # Skip geocoding for faster analysis
+            use_geocoding=add_missing_geolocations,  # Enable only if needed
             max_workers=4
         )
     except Exception as e:
@@ -51,7 +190,10 @@ def analyze_photos(data_dir="./data", target_dir="./results"):
 
     # Scan all photos
     print(f"\nScanning photos in: {data_path}")
-    print("(Geocoding disabled for faster analysis)\n")
+    if add_missing_geolocations:
+        print("(Geocoding enabled for missing location lookup)\n")
+    else:
+        print("(Geocoding disabled for faster analysis)\n")
     organizer.scan_photos()
 
     if not organizer.photos:
@@ -170,6 +312,77 @@ def analyze_photos(data_dir="./data", target_dir="./results"):
     print(f"  Files with datetime in filename: {stats['with_filename_datetime']} ({filename_pct:.1f}%)")
     print(f"  Files with GPS + EXIF datetime: {stats['with_gps_and_exif']} ({100*stats['with_gps_and_exif']/stats['total_photos']:.1f}%)")
 
+    # Display location cache information
+    if organizer.location_cache:
+        print("\n" + "-" * 100)
+        print("CACHED LOCATION INFORMATION")
+        print("-" * 100)
+
+        # Filter out None values (unsuccessful geocoding) and sort by city name
+        cached_locations = [(coords, city) for coords, city in organizer.location_cache.items() if city is not None]
+
+        print(f"\nCached city names ({len(cached_locations)}):")
+        for (lat, lon), city in sorted(cached_locations, key=lambda x: x[1]):
+            print(f"  {city:30} ({lat:.4f}, {lon:.4f})")
+
+    # Find coordinates without location names
+    coords_without_names = set()
+    for photo in organizer.photos:
+        if photo.gps_coords and not photo.location_name:
+            coords_without_names.add(photo.gps_coords)
+
+    if coords_without_names:
+        print("\n" + "-" * 100)
+        print("COORDINATES WITHOUT LOCATION NAMES")
+        print("-" * 100)
+        print(f"\nFound {len(coords_without_names)} unique coordinates without location names:")
+        for lat, lon in sorted(coords_without_names)[:20]:  # Show first 20
+            print(f"  ({lat:.4f}, {lon:.4f})")
+        if len(coords_without_names) > 20:
+            print(f"  ... and {len(coords_without_names) - 20} more")
+
+        if not add_missing_geolocations:
+            print("\nTip: Use --add-missing-geolocations to geocode these coordinates")
+        else:
+            print("\n🌍 Geocoding missing locations...")
+
+            # Import requests for geocoding
+            try:
+                import requests
+                import time
+            except ImportError:
+                print("❌ Error: 'requests' library required for geocoding")
+                print("Install with: pip install requests")
+            else:
+                geocoded_count = 0
+                failed_count = 0
+
+                for lat, lon in sorted(coords_without_names):
+                    # Round coords to match cache format (100m accuracy)
+                    rounded_coords = (round(lat, 3), round(lon, 3))
+
+                    # Check if already in cache
+                    if rounded_coords in organizer.location_cache:
+                        continue
+
+                    # Geocode using organizer's method
+                    location_name = organizer.get_location_name((lat, lon))
+
+                    if location_name and location_name != "Unknown":
+                        geocoded_count += 1
+                        print(f"  ✅ ({lat:.4f}, {lon:.4f}) -> {location_name}")
+                    else:
+                        failed_count += 1
+                        print(f"  ❌ ({lat:.4f}, {lon:.4f}) -> Failed to geocode")
+
+                print(f"\n✅ Geocoded: {geocoded_count}")
+                print(f"❌ Failed: {failed_count}")
+
+                # Save to config file
+                if geocoded_count > 0:
+                    organizer.save_geo_locations_to_config()
+                    print(f"\n💾 Saved {len(organizer.location_cache)} locations to cfg/geo_coords.cfg")
+
     # Preview organization with default settings
     print("\n" + "-" * 100)
     print("ORGANIZATION PREVIEW (Default Settings)")
@@ -281,9 +494,15 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Analyze photos in data directory")
-    parser.add_argument("data_dir", nargs="?", default="./data", help="Data directory to analyze")
-    parser.add_argument("target_dir", nargs="?", default="./results", help="Target directory for organization")
+    parser.add_argument("data_dir", nargs="?", help="Data directory to analyze (default: PROJECT_DATA env var or ./data)")
+    parser.add_argument("target_dir", nargs="?", help="Target directory for organization (default: PROJECT_WORK env var or ./results)")
+    parser.add_argument("--quick", action="store_true", help="Quick analysis (files only, no EXIF processing)")
+    parser.add_argument("--add-missing-geolocations", action="store_true",
+                        help="Geocode coordinates without location names and save to cfg/geo_coords.cfg")
 
     args = parser.parse_args()
 
-    analyze_photos(args.data_dir, args.target_dir)
+    if args.quick:
+        analyze_photos_quick(args.data_dir)
+    else:
+        analyze_photos(args.data_dir, args.target_dir, args.add_missing_geolocations)

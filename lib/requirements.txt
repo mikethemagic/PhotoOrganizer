@@ -1,6 +1,7 @@
 # PhotoOrganizer Dependencies
 Pillow>=8.0.0
 requests>=2.25.0
+static-ffmpeg>=2.5
 
 # Optional for development
 pytest>=6.0.0

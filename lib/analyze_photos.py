@@ -313,17 +313,32 @@ def analyze_photos(data_dir=None, target_dir=None, add_missing_geolocations=Fals
     print(f"  Files with GPS + EXIF datetime: {stats['with_gps_and_exif']} ({100*stats['with_gps_and_exif']/stats['total_photos']:.1f}%)")
 
     # Display location cache information
+    city_coords = {}  # Initialize for later use in outlier analysis
+
     if organizer.location_cache:
         print("\n" + "-" * 100)
         print("CACHED LOCATION INFORMATION")
         print("-" * 100)
 
-        # Filter out None values (unsuccessful geocoding) and sort by city name
+        # Filter out None values (unsuccessful geocoding)
         cached_locations = [(coords, city) for coords, city in organizer.location_cache.items() if city is not None]
 
-        print(f"\nCached city names ({len(cached_locations)}):")
-        for (lat, lon), city in sorted(cached_locations, key=lambda x: x[1]):
-            print(f"  {city:30} ({lat:.4f}, {lon:.4f})")
+        # Group coordinates by city
+        for (lat, lon), city in cached_locations:
+            if city not in city_coords:
+                city_coords[city] = []
+            city_coords[city].append((lat, lon))
+
+        print(f"\nCached city names ({len(cached_locations)}) - Min/Max coordinates:")
+        for city in sorted(city_coords.keys()):
+            coords_list = city_coords[city]
+            lats = [c[0] for c in coords_list]
+            lons = [c[1] for c in coords_list]
+
+            min_lat, max_lat = min(lats), max(lats)
+            min_lon, max_lon = min(lons), max(lons)
+
+            print(f"  {city:30} Lat: {min_lat:.4f} - {max_lat:.4f}, Lon: {min_lon:.4f} - {max_lon:.4f}")
 
     # Find coordinates without location names
     coords_without_names = set()
@@ -382,6 +397,66 @@ def analyze_photos(data_dir=None, target_dir=None, add_missing_geolocations=Fals
                 if geocoded_count > 0:
                     organizer.save_geo_locations_to_config()
                     print(f"\n💾 Saved {len(organizer.location_cache)} locations to cfg/geo_coords.cfg")
+
+    # Analyze coordinate outliers per location using DBSCAN
+    if city_coords:
+        print("\n" + "-" * 100)
+        print("COORDINATE OUTLIERS ANALYSIS (DBSCAN Clustering)")
+        print("-" * 100)
+
+        try:
+            from sklearn.cluster import DBSCAN
+            import numpy as np
+
+            outliers_found = False
+
+            for city in sorted(city_coords.keys()):
+                coords_list = city_coords[city]
+
+                # Skip if too few coordinates
+                if len(coords_list) < 3:
+                    continue
+
+                # Convert to numpy array for DBSCAN
+                coords_array = np.array(coords_list)
+
+                # DBSCAN with eps in degrees (~1.1 km per degree at equator)
+                # eps=0.01 degrees ≈ 1.1 km
+                clustering = DBSCAN(eps=0.01, min_samples=2).fit(coords_array)
+                labels = clustering.labels_
+
+                # Find outliers (label == -1)
+                outlier_indices = np.where(labels == -1)[0]
+
+                if len(outlier_indices) > 0:
+                    outliers_found = True
+                    print(f"\n  {city}:")
+
+                    # Calculate center of main cluster
+                    main_cluster_mask = labels >= 0
+                    if main_cluster_mask.any():
+                        main_cluster_coords = coords_array[main_cluster_mask]
+                        center_lat = np.mean(main_cluster_coords[:, 0])
+                        center_lon = np.mean(main_cluster_coords[:, 1])
+                    else:
+                        center_lat = np.mean(coords_array[:, 0])
+                        center_lon = np.mean(coords_array[:, 1])
+
+                    for idx in outlier_indices:
+                        lat, lon = coords_list[idx]
+                        # Calculate distance from center in km (rough approximation)
+                        lat_diff = (lat - center_lat) * 111.0  # 1 degree ≈ 111 km
+                        lon_diff = (lon - center_lon) * 111.0 * np.cos(np.radians(center_lat))
+                        distance_km = np.sqrt(lat_diff ** 2 + lon_diff ** 2)
+
+                        print(f"    ⚠️  Outlier: ({lat:.4f}, {lon:.4f}) - {distance_km:.1f} km from center")
+
+            if not outliers_found:
+                print("\n  No significant outliers found - all coordinates are well-clustered per location")
+
+        except ImportError:
+            print("\n  Note: scikit-learn required for DBSCAN analysis.")
+            print("  Install with: pip install scikit-learn")
 
     # Preview organization with default settings
     print("\n" + "-" * 100)

@@ -85,8 +85,8 @@ class PhotoOrganizer:
             add_exif: Fügt EXIF-Daten basierend auf Dateinamen hinzu
             powershell: Erzeugt PowerShell-Script (.ps1) statt Bash-Script (.sh)
         """
-        self.source_dir = Path(source_dir)
-        self.target_dir = Path(target_dir)
+        self.source_dir = Path(source_dir).resolve()
+        self.target_dir = Path(target_dir).resolve()
         self.same_day_hours = same_day_hours
         self.event_max_days = event_max_days
         self.geo_radius_km = geo_radius_km

@@ -177,13 +177,20 @@ class PhotoOrganizer:
         if not geoconfig_file.exists():
             # Erstelle Standard-Konfigurationsdatei
             config_content = """# PhotoOrganizer geo Koordinaten Konfigurationsdatei
-# 
+#
 # Diese Datei enthält zu den Angaben von Länge und Breite den entsprechenden Ort
+
 [geo_locations]
-47.269,8.846: Duernten
-48.341,10.906: Augsburg
-48.147,11.561: Muenchen
-48.151,11.462: Muenchen
+# Bekannte Orte mit Koordinaten
+47.269,8.846 = Duernten
+48.341,10.906 = Augsburg
+48.147,11.561 = Muenchen
+48.151,11.462 = Muenchen
+
+[unknown]
+# GPS-Koordinaten, die nicht reverse-geocodiert werden konnten
+# Diese werden bei --no-geocoding Flag gespeichert
+# Format: latitude,longitude = unknown
 """
             self.create_default_config(geoconfig_file, config_content)
             print(f"🔧 Standard-Config erstellt: {geoconfig_file}")
@@ -191,7 +198,8 @@ class PhotoOrganizer:
         try:
             config = configparser.ConfigParser()
             config.read(geoconfig_file, encoding='utf-8')
-            
+
+            # Load known locations from [geo_locations]
             if 'geo_locations' in config:
                 for key, location_name in config['geo_locations'].items():
                     try:
@@ -199,47 +207,107 @@ class PhotoOrganizer:
                         lat_str, lon_str = key.split(',')
                         lat = float(lat_str.strip())
                         lon = float(lon_str.strip())
-                        
+
                         # Füge zum Cache hinzu
                         default_patterns[(lat, lon)] = location_name.strip()
-                        
+
                     except ValueError as e:
-                        print(f"⚠️  Ungültiges Koordinatenformat in Config: '{key}' -> {e}")
+                        print(f"⚠️  Ungültiges Koordinatenformat in [geo_locations]: '{key}' -> {e}")
                         continue
-                
-                if default_patterns:
+
+            # Load unknown coordinates from [unknown] section
+            # These won't be re-queried via API
+            if 'unknown' in config:
+                unknown_count = 0
+                for key in config['unknown'].keys():
+                    try:
+                        # Parse Koordinaten aus dem Key "lat,lon"
+                        lat_str, lon_str = key.split(',')
+                        lat = float(lat_str.strip())
+                        lon = float(lon_str.strip())
+
+                        # Store as None to avoid re-querying
+                        default_patterns[(lat, lon)] = None
+                        unknown_count += 1
+
+                    except ValueError as e:
+                        print(f"⚠️  Ungültiges Koordinatenformat in [unknown]: '{key}' -> {e}")
+                        continue
+
+                if unknown_count > 0 and default_patterns:
+                    print(f"🔧 {len(default_patterns)} Pattern aus Config geladen ({unknown_count} unbekannt): {geoconfig_file}")
+                    return default_patterns
+                elif default_patterns:
                     print(f"🔧 {len(default_patterns)} Pattern aus Config geladen: {geoconfig_file}")
                     return default_patterns
-                    
+
         except Exception as e:
-            print(f"⚠️  Fehler beim Laden der Config: {e}")        
+            print(f"⚠️  Fehler beim Laden der Config: {e}")
             print("🔧 Verwende Default-Pattern")
             return default_patterns
 
     def save_geo_locations_to_config(self) -> None:
         """
-        Alternative: Direkte String-Manipulation (einfachster Code).
-        Nur für geo_locations Sektion geeignet.
-        """
+        Save geolocation data to geo_coords.cfg using configparser.
 
-        project_cfg = os.environ.get('PROJECT_CFG')       
+        Known locations (with names) go to [geo_locations].
+        Unknown locations (with None value) go to [unknown].
+        Preserves existing sections and entries.
+        """
+        import configparser
+
+        project_cfg = os.environ.get('PROJECT_CFG')
         config_dir = Path(project_cfg)
         geoconfig_file = config_dir / "geo_coords.cfg"
 
         try:
-            lines = ["[geo_locations]\n"]
-            
-            # Sortiere für konsistente Ausgabe
-            sorted_items = sorted(self.location_cache.items())
-            
-            for (lat, lon), location_name in sorted_items:
-                lines.append(f"{lat},{lon}: {location_name}\n")
-            
+            # Load existing config to preserve other sections
+            config = configparser.ConfigParser()
+            if config_dir.exists() and geoconfig_file.exists():
+                config.read(geoconfig_file, encoding='utf-8')
+
+            # Ensure sections exist
+            if 'geo_locations' not in config:
+                config['geo_locations'] = {}
+            if 'unknown' not in config:
+                config['unknown'] = {}
+
+            # Separate known and unknown locations
+            known_count = 0
+            unknown_count = 0
+
+            for (lat, lon), location_name in sorted(self.location_cache.items()):
+                key = f"{lat},{lon}"
+
+                if location_name is None or location_name == "unknown":
+                    # Store in [unknown] section only if value is None
+                    # (not an empty string, actual None)
+                    if location_name is None:
+                        config['unknown'][key] = "unknown"
+                        unknown_count += 1
+                else:
+                    # Store in [geo_locations] section
+                    config['geo_locations'][key] = location_name
+                    known_count += 1
+
+            # Remove [unknown] section if it's empty (all entries were geocoded)
+            if 'unknown' in config:
+                if len(config['unknown']) == 0:
+                    config.remove_section('unknown')
+
+            # Save to file
+            os.makedirs(config_dir, exist_ok=True)
             with open(geoconfig_file, 'w', encoding='utf-8') as f:
-                f.writelines(lines)
-            
-            print(f"✅ {len(self.location_cache)} Geo-Locations gespeichert: {geoconfig_file}")
-            
+                config.write(f)
+
+            total = known_count + unknown_count
+            print(f"✅ Geo-Locations gespeichert: {geoconfig_file}")
+            print(f"   Bekannte Orte [geo_locations]: {known_count}")
+            if unknown_count > 0:
+                print(f"   Unbekannte Koordinaten [unknown]: {unknown_count}")
+            else:
+                print(f"   [unknown] section wurde entfernt (alle Koordinaten geocodiert)")
+
         except Exception as e:
             print(f"❌ Fehler beim Speichern: {e}")
 

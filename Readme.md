@@ -279,6 +279,145 @@ bin\reset2data.bat
 
 This allows you to re-organize with different settings.
 
+### Update Cache Command
+
+**Update cached file paths after moving photos:**
+```cmd
+bin\update_cache.bat --folder <target_folder> [--verbose]
+```
+
+**Linux/Mac:**
+```bash
+bash bin/update_cache.sh --folder <target_folder> [--verbose]
+```
+
+#### What is the Update Cache Script?
+
+After you've organized your photos into the `results/` folder, the cache still contains the **old file paths** from the `data/` folder. Instead of re-scanning all files and recalculating hashes (which is slow), the `update_cache` script updates the cache paths without requiring a full rescan.
+
+#### Why Would You Use This?
+
+**Scenario:** You've successfully organized 5000 photos and now want to:
+
+1. Copy the organized results to your final archive location
+2. Avoid duplicate detection issues on the next run
+3. Speed up future organization runs
+
+**Problem without update_cache:**
+
+- If you run `organize.bat` again with the same photos, it recalculates all hashes
+- This wastes time and resources
+- You might encounter duplicate detection problems if files are in different paths
+
+**Solution with update_cache:**
+
+- Update the cache with the new folder location
+- Reuse all existing file hashes and metadata
+- Run organize again with minimal overhead
+- Avoid unnecessary duplicate processing
+
+#### How to Use It
+
+**Typical workflow:**
+
+```cmd
+REM 1. Organize photos from data/ to results/
+bin\organize.bat data results --execute
+
+REM 2. Copy organized photos to final archive location
+copy /Y results\* D:\Archive\Photos\*
+
+REM 3. Update cache to reflect new location (avoid duplicates)
+bin\update_cache.bat --folder D:\Archive\Photos
+
+REM 4. Now organize to another target using the same cache (faster)
+bin\organize.bat data D:\Backup\Photos --execute
+```
+
+**With verbose output to see what's being updated:**
+```cmd
+bin\update_cache.bat --folder D:\Archive\Photos --verbose
+```
+
+#### What Does update_cache Do?
+
+The script performs these operations:
+
+1. **Scans the target folder** for all files
+2. **Updates paths in cache** for files that exist in new location
+3. **Adds new files** to cache (with computed hashes)
+4. **Preserves metadata** (EXIF data, dates, GPS coordinates, file hashes)
+5. **Reports statistics** about what was updated
+
+#### Example Output
+
+```txt
+============================================================
+Starting cache update...
+Cache Directory: cache/
+Source Folder: D:\Archive\Photos
+============================================================
+
+Processing cache file: photo_cache_20250312_150000.json
+  Updated: IMG_0001.jpg
+    Old: C:\data\IMG_0001.jpg
+    New: D:\Archive\Photos\IMG_0001.jpg
+  Updated: IMG_0002.jpg
+    Old: C:\data\IMG_0002.jpg
+    New: D:\Archive\Photos\IMG_0002.jpg
+  ... and 4998 more files
+
+============================================================
+CACHE UPDATE SUMMARY
+============================================================
+Files found in new folder: 5000
+Total cache entries (before): 5000
+Paths updated: 5000
+New files added: 0
+Files not found in new location: 0
+Cache files updated: photo_cache_20250312_150000.json
+```
+
+#### Performance Benefits
+
+- **Without update_cache:** 5000 files × 5 seconds per hash = 25,000 seconds (7+ hours)
+- **With update_cache:** Path update only = 10 seconds
+
+#### Direct Usage of cache.py
+
+You can also use `cache.py` directly without wrapper scripts. This is useful if you want to:
+- Integrate cache management into your own scripts
+- Have more control over arguments
+- Use it in CI/CD pipelines
+
+**Basic syntax:**
+
+```cmd
+python lib\cache.py [--folder|--archive|--to-permanent] [--compare] [--verbose] [--cache-dir <dir>]
+```
+
+**Common scenarios:**
+
+Update cache after moving files:
+```cmd
+python lib\cache.py --folder D:\Archive\Photos --cache-dir cache
+```
+
+Build permanent CSV from JSON cache:
+```cmd
+python lib\cache.py --to-permanent --cache-dir cache
+```
+
+Compare archive with permanent cache:
+```cmd
+python lib\cache.py --archive D:\MyPhotos --compare --cache-dir cache --verbose
+```
+
+**Get detailed help with examples:**
+```cmd
+python lib\cache.py --help
+```
+
 ---
 
 ## Configuration

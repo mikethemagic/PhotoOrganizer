@@ -5,8 +5,9 @@ Cache management library for updating file paths in cached metadata.
 import json
 import os
 import hashlib
+import csv
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Set
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -55,6 +56,52 @@ class CacheManager:
                 files[file_path.name] = file_path
 
         return files
+
+    def _build_file_inventory(self, folder_path: str, verbose: bool = False) -> Dict[str, list]:
+        """
+        Build a complete recursive file inventory of a folder.
+
+        Unlike scan_folder, this handles duplicate filenames by storing all occurrences.
+
+        Args:
+            folder_path: Path to the folder to scan
+            verbose: Print detailed information about files found
+
+        Returns:
+            Dictionary with filename as key and list of Path objects as values
+        """
+        folder = Path(folder_path)
+        if not folder.exists():
+            raise ValueError(f"Folder does not exist: {folder_path}")
+
+        file_inventory = {}
+        total_files = 0
+
+        for file_path in folder.rglob("*"):
+            if file_path.is_file():
+                filename = file_path.name
+
+                # Store as list to handle duplicate filenames
+                if filename not in file_inventory:
+                    file_inventory[filename] = []
+
+                file_inventory[filename].append(file_path)
+                total_files += 1
+
+                if verbose:
+                    rel_path = file_path.relative_to(folder)
+                    print(f"    Found: {rel_path}")
+
+        if verbose:
+            print(f"\n  Total files found: {total_files}")
+            duplicate_count = sum(1 for paths in file_inventory.values() if len(paths) > 1)
+            if duplicate_count > 0:
+                print(f"  Files with duplicate names: {duplicate_count}")
+                for filename, paths in file_inventory.items():
+                    if len(paths) > 1:
+                        print(f"    - {filename}: {len(paths)} occurrences")
+
+        return file_inventory
 
     def _is_video(self, file_path: Path) -> bool:
         """Check if file is a video based on extension."""
@@ -148,14 +195,25 @@ class CacheManager:
         Returns:
             Dictionary with update statistics
         """
-        # Scan the new folder for files
+        # Build complete file inventory (handles duplicate filenames)
+        if verbose:
+            print("\nBuilding file inventory from new folder...")
+        file_inventory = self._build_file_inventory(new_folder, verbose=verbose)
+
+        # Also scan for backward compatibility (single file per name)
         new_files = self.scan_folder(new_folder)
+
+        # Count total unique files (accounting for duplicates)
+        total_files_count = sum(len(paths) for paths in file_inventory.values())
+
         stats = {
-            "total_files_found": len(new_files),
+            "total_files_found": total_files_count,
+            "total_unique_filenames": len(file_inventory),
             "total_cache_entries": 0,
             "paths_updated": 0,
             "new_files_added": 0,
             "files_not_found": [],
+            "files_with_duplicates_in_target": [],
             "updated_cache_files": [],
             "files_added": []
         }
@@ -191,8 +249,31 @@ class CacheManager:
                             cached_filenames.add(filename)
 
                             # Search for the file in the new folder
-                            if filename in new_files:
-                                new_path = new_files[filename]
+                            if filename in file_inventory:
+                                matching_paths = file_inventory[filename]
+
+                                # If multiple files with same name, use the first match
+                                # or try to match by file size as a heuristic
+                                new_path = matching_paths[0]
+
+                                if len(matching_paths) > 1:
+                                    if 'file_size' in entry:
+                                        # Try to find matching file by size
+                                        for candidate_path in matching_paths:
+                                            try:
+                                                if candidate_path.stat().st_size == entry['file_size']:
+                                                    new_path = candidate_path
+                                                    break
+                                            except Exception:
+                                                pass
+
+                                    # Report duplicate detection
+                                    if filename not in [f['filename'] for f in stats["files_with_duplicates_in_target"]]:
+                                        stats["files_with_duplicates_in_target"].append({
+                                            "filename": filename,
+                                            "count": len(matching_paths)
+                                        })
+
                                 if entry['filepath'] != str(new_path):
                                     if verbose:
                                         print(f"  Updated: {filename}")
@@ -270,11 +351,19 @@ class CacheManager:
         print("CACHE UPDATE SUMMARY")
         print("="*60)
         print(f"Files found in new folder: {stats['total_files_found']}")
+        print(f"Unique filenames: {stats['total_unique_filenames']}")
         print(f"Total cache entries (before): {stats['total_cache_entries']}")
         print(f"Paths updated: {stats['paths_updated']}")
         print(f"New files added: {stats['new_files_added']}")
         print(f"Files not found in new location: {len(stats['files_not_found'])}")
         print(f"Cache files updated: {', '.join(stats['updated_cache_files'])}")
+
+        if stats['files_with_duplicates_in_target']:
+            print(f"\nFiles with duplicate names in target folder: {len(stats['files_with_duplicates_in_target'])}")
+            for entry in stats['files_with_duplicates_in_target'][:5]:  # Show first 5
+                print(f"  - {entry['filename']}: {entry['count']} occurrences")
+            if len(stats['files_with_duplicates_in_target']) > 5:
+                print(f"  ... and {len(stats['files_with_duplicates_in_target']) - 5} more")
 
         if stats['files_not_found']:
             print("\nFiles no longer in new folder:")
@@ -290,6 +379,200 @@ class CacheManager:
             if len(stats['files_added']) > 10:
                 print(f"  ... and {len(stats['files_added']) - 10} more")
 
+    def _find_permanent_cache_files(self) -> List[Path]:
+        """Find all permanent CSV cache files in the cache directory."""
+        if not self.cache_dir.exists():
+            return []
+        cache_files = list(self.cache_dir.glob("photo_cache_permanent_*.csv"))
+        return sorted(cache_files, reverse=True)  # Most recent first
+
+    def _load_permanent_cache_data(self) -> Dict[str, dict]:
+        """
+        Load all data from permanent CSV cache files.
+
+        Returns:
+            Dictionary with filepath as key and metadata dict as value
+        """
+        permanent_files = self._find_permanent_cache_files()
+        if not permanent_files:
+            print("No permanent cache files found")
+            return {}
+
+        cache_data = {}
+        for cache_file in permanent_files:
+            print(f"Loading: {cache_file.name}")
+            try:
+                with open(cache_file, 'r', encoding='utf-8') as f:
+                    reader = csv.DictReader(f, delimiter=';')
+                    for row in reader:
+                        filepath = row.get('filepath', '')
+                        if filepath:
+                            cache_data[filepath] = row
+            except Exception as e:
+                print(f"Warning: Error reading {cache_file.name}: {e}")
+
+        return cache_data
+
+    def compare_archive_with_cache(self, archive_folder: str, verbose: bool = False) -> Dict[str, any]:
+        """
+        Compare archive folder with permanent cache files.
+
+        Identifies files in archive that are not in the cache.
+
+        Args:
+            archive_folder: Path to the archive folder to compare
+            verbose: Print detailed information
+
+        Returns:
+            Dictionary with comparison statistics
+        """
+        print("\n" + "="*60)
+        print("ARCHIVE vs CACHE COMPARISON")
+        print("="*60)
+
+        # Load permanent cache data
+        print("\nLoading permanent cache data...")
+        cache_data = self._load_permanent_cache_data()
+        print(f"Loaded {len(cache_data)} entries from cache")
+
+        # Build file inventory from archive
+        print("\nScanning archive folder...")
+        file_inventory = self._build_file_inventory(archive_folder, verbose=False)
+        archive_files_list = []
+        for filename, paths in file_inventory.items():
+            for path in paths:
+                archive_files_list.append(path)
+
+        print(f"Found {len(archive_files_list)} files in archive")
+
+        # Compare: which files are in archive but not in cache
+        archive_filepaths = {str(p) for p in archive_files_list}
+        cache_filepaths = set(cache_data.keys())
+
+        missing_in_cache = []
+        for archive_file in archive_files_list:
+            archive_file_str = str(archive_file)
+            if archive_file_str not in cache_filepaths:
+                # Also check if file exists with different path but same name and size
+                filename = archive_file.name
+                file_size = archive_file.stat().st_size
+                found_in_cache = False
+
+                for cached_path, cached_data in cache_data.items():
+                    cached_filename = Path(cached_path).name
+                    cached_size = cached_data.get('file_size', '')
+                    if cached_filename == filename and str(cached_size) == str(file_size):
+                        found_in_cache = True
+                        break
+
+                if not found_in_cache:
+                    missing_in_cache.append(archive_file)
+
+        stats = {
+            "archive_files_count": len(archive_files_list),
+            "cache_entries_count": len(cache_data),
+            "missing_in_cache": missing_in_cache,
+            "missing_count": len(missing_in_cache)
+        }
+
+        # Print comparison results
+        print(f"\n{'='*60}")
+        print(f"Files in archive: {len(archive_files_list)}")
+        print(f"Files in cache: {len(cache_data)}")
+        print(f"Files in archive but NOT in cache: {len(missing_in_cache)}")
+
+        if missing_in_cache:
+            print(f"\nMissing files (first 20):")
+            for file_path in missing_in_cache[:20]:
+                print(f"  - {file_path.name}")
+            if len(missing_in_cache) > 20:
+                print(f"  ... and {len(missing_in_cache) - 20} more")
+
+        return stats
+
+    def add_missing_files_to_cache(self, missing_files: List[Path], verbose: bool = False) -> str:
+        """
+        Add missing files to permanent cache by computing hashes.
+
+        Args:
+            missing_files: List of file paths to add
+            verbose: Print detailed information
+
+        Returns:
+            Path to the created permanent cache file
+        """
+        if not missing_files:
+            print("No files to add")
+            return None
+
+        print(f"\n{'='*60}")
+        print(f"Computing hashes for {len(missing_files)} missing files...")
+        print(f"{'='*60}")
+
+        # Compute hashes in parallel
+        file_hashes = self._compute_file_hashes_parallel(missing_files)
+
+        # Prepare new entries
+        new_entries = []
+        for file_path, file_hash in file_hashes.items():
+            metadata = self._get_file_metadata(file_path, file_hash=file_hash)
+            if metadata:
+                new_entries.append(metadata)
+                if verbose:
+                    print(f"  Processed: {file_path.name}")
+
+        # Create new permanent cache CSV
+        now = datetime.now()
+        timestamp = now.strftime('%Y%m%d_%H%M%S')
+        output_file = self.cache_dir / f"photo_cache_permanent_added_{timestamp}.csv"
+
+        # Prepare CSV rows
+        rows = []
+        for entry in new_entries:
+            row = {
+                'created': now.isoformat(),
+                'source_dir': '',
+                'target_dir': '',
+                'total_photos': '',
+                'duplicates_count': '',
+                'last_updated': now.isoformat(),
+                'filepath': entry.get('filepath', ''),
+                'datetime': entry.get('datetime', ''),
+                'file_hash': entry.get('file_hash', ''),
+                'file_size': entry.get('file_size', ''),
+                'is_video': entry.get('is_video', ''),
+            }
+            rows.append(row)
+
+        # Write CSV file
+        column_order = [
+            'created',
+            'source_dir',
+            'target_dir',
+            'total_photos',
+            'duplicates_count',
+            'last_updated',
+            'filepath',
+            'datetime',
+            'file_hash',
+            'file_size',
+            'is_video',
+        ]
+
+        try:
+            with open(output_file, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.DictWriter(f, fieldnames=column_order, delimiter=';')
+                writer.writeheader()
+                writer.writerows(rows)
+
+            print(f"\n[SUCCESS] New permanent cache created: {output_file}")
+            print(f"   Entries added: {len(rows)}")
+            return str(output_file)
+
+        except Exception as e:
+            print(f"[ERROR] Error creating permanent cache: {e}")
+            return None
+
     def build_permanent_cache(self) -> bool:
         """
         Build a permanent CSV cache from all JSON cache files.
@@ -300,8 +583,6 @@ class CacheManager:
         Returns:
             True if successful, False otherwise
         """
-        import csv
-
         if not self.cache_files:
             print("No cache files found")
             return False
@@ -405,12 +686,63 @@ def main():
     import sys
     import argparse
 
+    # Usage examples
+    examples = """
+EXAMPLES:
+
+  1. Update cache paths after moving files to new location:
+     python lib/cache.py --folder D:\\Archive\\Photos --cache-dir cache
+
+  2. Update cache with verbose output:
+     python lib/cache.py --folder /nas/organized_photos --cache-dir cache --verbose
+
+  3. Build permanent CSV cache from JSON cache files:
+     python lib/cache.py --to-permanent --cache-dir cache
+
+  4. Compare archive folder with permanent cache:
+     python lib/cache.py --archive D:\\MyPhotos --compare --cache-dir cache
+
+  5. Compare with verbose output and optional hash computation:
+     python lib/cache.py --archive /backup/photos --compare --cache-dir cache --verbose
+
+TYPICAL WORKFLOW:
+
+  Step 1: Organize and cache photos
+    python lib/cache.py --organize data results --execute
+
+  Step 2: Convert JSON cache to permanent CSV
+    python lib/cache.py --to-permanent --cache-dir cache
+
+  Step 3: Move organized photos to archive
+    cp -r results/* /archive/photos/
+
+  Step 4: Update cache to reflect new paths
+    python lib/cache.py --folder /archive/photos --cache-dir cache
+
+  Step 5: Compare archive with cache (find any new files)
+    python lib/cache.py --archive /archive/photos --compare --cache-dir cache
+
+FEATURES:
+
+  --folder:      Update cache with new file paths (fast, no hash recalculation)
+  --to-permanent: Build permanent CSV from JSON cache (one-time operation)
+  --compare:     Compare archive folder with permanent cache (identify missing files)
+  --verbose:     Show detailed progress during operations
+  --cache-dir:   Specify custom cache directory (default: PROJECT_CACHE env var)
+"""
+
     parser = argparse.ArgumentParser(
-        description='Update cache file paths based on a new folder location, or build permanent cache'
+        description='Update cache file paths, build permanent cache, or compare archive with cache',
+        epilog=examples,
+        formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument(
         '--folder',
         help='Path to the folder containing files to update in cache'
+    )
+    parser.add_argument(
+        '--archive',
+        help='Path to archive folder for comparison (use with --compare)'
     )
     parser.add_argument(
         '--cache-dir',
@@ -426,13 +758,23 @@ def main():
         action='store_true',
         help='Build permanent CSV cache from all JSON cache files'
     )
+    parser.add_argument(
+        '--compare',
+        action='store_true',
+        help='Compare archive folder with permanent cache (requires --archive)'
+    )
 
     args = parser.parse_args()
 
     # Validate arguments
-    if not args.folder and not args.to_permanent:
+    if not args.folder and not args.to_permanent and not args.compare:
         parser.print_help()
-        print("\nError: Either --folder or --to-permanent must be specified")
+        print("\nError: Specify --folder, --to-permanent, or --compare")
+        sys.exit(1)
+
+    if args.compare and not args.archive:
+        parser.print_help()
+        print("\nError: --compare requires --archive argument")
         sys.exit(1)
 
     # Get cache directory
@@ -444,7 +786,27 @@ def main():
     try:
         manager = CacheManager(cache_dir)
 
-        if args.to_permanent:
+        if args.compare:
+            # Compare archive with cache
+            stats = manager.compare_archive_with_cache(args.archive, verbose=args.verbose)
+
+            if stats['missing_count'] > 0:
+                print(f"\n{'='*60}")
+                response = input(f"Found {stats['missing_count']} missing files. Update cache? (y/n): ")
+                if response.lower() == 'y':
+                    result = manager.add_missing_files_to_cache(stats['missing_in_cache'], verbose=args.verbose)
+                    if result:
+                        print(f"\nCache updated successfully: {result}")
+                    sys.exit(0)
+                else:
+                    print("Cache update skipped")
+                    sys.exit(0)
+            else:
+                print(f"\n{'='*60}")
+                print("All files in archive are already in cache!")
+                sys.exit(0)
+
+        elif args.to_permanent:
             # Build permanent CSV cache
             print("="*60)
             print("Building Permanent CSV Cache")

@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Update cache file paths based on a new folder location
+# Update cache file paths based on a new folder location, or compare archive with cache
 # This script reads all files in a specified folder and updates their paths in the cache
 #
 
@@ -24,7 +24,10 @@ fi
 
 # Parse arguments
 FOLDER_PATH=""
+ARCHIVE_PATH=""
 VERBOSE=""
+COMPARE=""
+TO_PERMANENT=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -32,8 +35,20 @@ while [[ $# -gt 0 ]]; do
             FOLDER_PATH="$2"
             shift 2
             ;;
+        --archive)
+            ARCHIVE_PATH="$2"
+            shift 2
+            ;;
         --verbose)
             VERBOSE="--verbose"
+            shift
+            ;;
+        --compare)
+            COMPARE="--compare"
+            shift
+            ;;
+        --to-permanent)
+            TO_PERMANENT="--to-permanent"
             shift
             ;;
         --help|-h)
@@ -49,16 +64,26 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Validate required arguments
-if [ -z "$FOLDER_PATH" ]; then
-    echo "Error: --folder argument is required"
+if [ -z "$FOLDER_PATH" ] && [ -z "$ARCHIVE_PATH" ] && [ -z "$TO_PERMANENT" ]; then
+    echo "Error: Specify --folder, --archive with --compare, or --to-permanent"
     echo "Use --help for more information"
     exit 1
 fi
 
-# Check if folder exists
-if [ ! -d "$FOLDER_PATH" ]; then
-    echo "Error: Folder does not exist: $FOLDER_PATH"
-    exit 1
+# Check if archive folder exists if compare is specified
+if [ -n "$ARCHIVE_PATH" ]; then
+    if [ ! -d "$ARCHIVE_PATH" ]; then
+        echo "Error: Archive folder does not exist: $ARCHIVE_PATH"
+        exit 1
+    fi
+fi
+
+# Check if folder exists if folder is specified
+if [ -n "$FOLDER_PATH" ]; then
+    if [ ! -d "$FOLDER_PATH" ]; then
+        echo "Error: Folder does not exist: $FOLDER_PATH"
+        exit 1
+    fi
 fi
 
 # Check if cache directory exists
@@ -76,22 +101,35 @@ fi
 # Display header
 echo ""
 echo "============================================================"
-echo "Starting cache update..."
+if [ -n "$COMPARE" ]; then
+    echo "Starting cache comparison..."
+    echo "Archive Folder: $ARCHIVE_PATH"
+elif [ -n "$TO_PERMANENT" ]; then
+    echo "Building permanent CSV cache..."
+else
+    echo "Starting cache update..."
+    echo "Source Folder: $FOLDER_PATH"
+fi
 echo "Cache Directory: $PROJECT_CACHE"
-echo "Source Folder: $FOLDER_PATH"
 echo "============================================================"
 echo ""
 
 # Run the Python cache update script
-python3 "$PROJECT_LIB/cache.py" --folder "$FOLDER_PATH" --cache-dir "$PROJECT_CACHE" $VERBOSE
+if [ -n "$COMPARE" ]; then
+    python3 "$PROJECT_LIB/cache.py" --archive "$ARCHIVE_PATH" --compare --cache-dir "$PROJECT_CACHE" $VERBOSE
+elif [ -n "$TO_PERMANENT" ]; then
+    python3 "$PROJECT_LIB/cache.py" --to-permanent --cache-dir "$PROJECT_CACHE" $VERBOSE
+else
+    python3 "$PROJECT_LIB/cache.py" --folder "$FOLDER_PATH" --cache-dir "$PROJECT_CACHE" $VERBOSE
+fi
 
 # Check exit status
 if [ $? -eq 0 ]; then
     echo ""
-    echo "Cache update completed successfully"
+    echo "Cache operation completed successfully"
     exit 0
 else
     echo ""
-    echo "Error: Cache update failed"
+    echo "Error: Cache operation failed"
     exit 1
 fi

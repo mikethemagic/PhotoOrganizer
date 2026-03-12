@@ -8,6 +8,7 @@ import os
 import shutil
 import json
 import re
+import configparser
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Set
@@ -68,7 +69,7 @@ class PhotoInfo:
 
 class PhotoOrganizer:
     def __init__(self, 
-                 source_dir: str, 
+                 source_dir: str,
                  target_dir: str,
                  same_day_hours: int = 12,
                  event_max_days: int = 3,
@@ -79,10 +80,11 @@ class PhotoOrganizer:
                  script_path: str = None,
                  cache_file: Optional[str] = None,
                  add_exif: bool = False,
-                 powershell: bool = False):
+                 powershell: bool = False,
+                 compare_with_cache: bool = True):
         """
         Initialisiert den Photo Organizer
-        
+
         Args:
             source_dir: Quellverzeichnis mit Fotos
             target_dir: Zielverzeichnis für organisierte Fotos
@@ -96,6 +98,7 @@ class PhotoOrganizer:
             cache_file: JSON-Cache-Datei für Photo-Daten und Geocoding (None = auto mit PROJECT_CACHE)
             add_exif: Fügt EXIF-Daten basierend auf Dateinamen hinzu
             powershell: Erzeugt PowerShell-Script (.ps1) statt Bash-Script (.sh)
+            compare_with_cache: Vergleicht mit permanenter CSV (default: True)
         """
         self.source_dir = Path(source_dir).resolve()
         self.target_dir = Path(target_dir).resolve()
@@ -127,12 +130,19 @@ class PhotoOrganizer:
         
         self.photos: List[PhotoInfo] = []
         self.duplicates: Set[str] = set()
-        
+        self.cached: Set[str] = set()  # Dateien die bereits in der Sammlung sind
+
         # Thread-sichere Caches
         self.location_cache: Dict[Tuple[float, float], str] = {}
         self.location_cache_lock = threading.Lock()
         self.hash_cache: Dict[str, str] = {}
         self.hash_cache_lock = threading.Lock()
+
+        # Permanenter Cache aus CSV für Duplikat-Erkennung
+        self.compare_with_cache = compare_with_cache
+        self.cached_hash_dict: Dict[str, str] = {}  # hash -> filepath aus permanenter CSV
+        if compare_with_cache:
+            self.load_permanent_cache()
         
         # Shell-Script Sammlung
         self.move_commands: List[Tuple[Path, Path]] = []  # (source, target)
@@ -141,6 +151,8 @@ class PhotoOrganizer:
         self.filename_patterns = self.load_filename_patterns()
         # Lade default Geokoordinaten aus Konfiguration
         self.location_cache = self.load_geo_cords()
+        # Lade Zielordner-Benennungsmuster aus Konfiguration
+        self.foldernames_config = self.load_foldernames_config()
         
         # EXIF-Statistiken
         self.exif_added_count = 0
@@ -155,6 +167,70 @@ class PhotoOrganizer:
             print(f"{script_type}-Script: {self.script_path}")
         if self.add_exif:
             print(f"EXIF-Hinzufügung: Aktiviert")
+
+    def load_permanent_cache(self) -> bool:
+        """
+        Lädt die neueste permanente CSV-Cache-Datei.
+        Speichert alle Hashes für Duplikat-Erkennung.
+
+        Returns:
+            True wenn erfolgreich, False sonst
+        """
+        import csv
+
+        try:
+            project_cache = os.environ.get('PROJECT_CACHE')
+            if not project_cache:
+                print("⚠️  PROJECT_CACHE nicht gesetzt. Permanenter Cache wird ignoriert.")
+                return False
+
+            cache_dir = Path(project_cache)
+            if not cache_dir.exists():
+                print(f"⚠️  Cache-Verzeichnis existiert nicht: {cache_dir}")
+                return False
+
+            # Finde die neueste permanente CSV-Datei
+            permanent_files = list(cache_dir.glob('photo_cache_permanent_*.csv'))
+
+            # Fallback: Prüfe auch auf "permanent.csv" (Legacy-Name)
+            if not permanent_files:
+                legacy_file = cache_dir / 'permanent.csv'
+                if legacy_file.exists():
+                    permanent_files = [legacy_file]
+                    print(f"Lade Legacy-Cache: {legacy_file.name}")
+
+            if not permanent_files:
+                print("⚠️  Keine permanente CSV-Datei gefunden")
+                return False
+
+            # Sortiere nach Dateinamen (enthält Timestamp) - wenn mehrere neueste Datei nehmen
+            if len(permanent_files) > 1:
+                permanent_files.sort()
+                permanent_file = permanent_files[-1]  # Neueste Datei
+            else:
+                permanent_file = permanent_files[0]
+
+            print(f"Lade permanenten Cache: {permanent_file.name}")
+
+            # Lade die CSV und fülle cached_hash_dict
+            with open(permanent_file, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f, delimiter=';')
+                hash_count = 0
+
+                for row in reader:
+                    file_hash = row.get('file_hash', '').strip()
+                    filepath = row.get('filepath', '').strip()
+
+                    if file_hash and filepath:
+                        self.cached_hash_dict[file_hash] = filepath
+                        hash_count += 1
+
+            print(f"  Geladen: {hash_count} Hashes aus permanenter Cache")
+            return True
+
+        except Exception as e:
+            print(f"⚠️  Fehler beim Laden permanenter Cache: {e}")
+            return False
 
     def load_geo_cords(self) -> Dict[Tuple[float, float], str]:
         """Lädt Geokoordinaten aus Konfigurationsdatei"""
@@ -310,6 +386,48 @@ class PhotoOrganizer:
 
         except Exception as e:
             print(f"❌ Fehler beim Speichern: {e}")
+
+    def load_foldernames_config(self) -> Dict[str, str]:
+        """Lädt Zielordner-Benennungsmuster aus Konfigurationsdatei"""
+        # Default-Muster falls Config nicht verfügbar
+        default_config = {
+            'single_day': '{year}/{start_date}',
+            'multi_day': '{year}/{start_date}_bis_{end_date}',
+            'single_files': '{year}/einzeldateien',
+        }
+
+        project_cfg = os.environ.get('PROJECT_CFG')
+        if not project_cfg:
+            print("🔧 PROJECT_CFG nicht gesetzt, verwende Standard-Muster")
+            return default_config
+
+        config_dir = Path(project_cfg)
+        config_file = config_dir / "photo_organizer.cfg"
+
+        if not config_file.exists():
+            return default_config
+
+        try:
+            config = configparser.ConfigParser()
+            config.read(config_file, encoding='utf-8')
+
+            if 'foldernames_target' in config:
+                loaded_config = {}
+                for key, value in config['foldernames_target'].items():
+                    if value.strip():  # Überspringe leere Werte
+                        loaded_config[key.strip()] = value.strip()
+
+                if loaded_config:
+                    print(f"🔧 Zielordner-Muster aus Config geladen: {config_file}")
+                    # Merge mit Default-Config für fehlende Keys
+                    result = default_config.copy()
+                    result.update(loaded_config)
+                    return result
+
+        except Exception as e:
+            print(f"⚠️  Fehler beim Laden der Folder-Konfiguration: {e}")
+
+        return default_config
 
     def load_filename_patterns(self) -> List[str]:
         """Lädt Dateinamen-Pattern aus Konfigurationsdatei"""
@@ -1034,10 +1152,12 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
                 'source_dir': str(self.source_dir),
                 'target_dir': str(self.target_dir),
                 'total_photos': len(self.photos),
-                'duplicates_count': len(self.duplicates)
+                'duplicates_count': len(self.duplicates),
+                'cached_count': len(self.cached)
             },
             'photos': [],
             'duplicates': list(self.duplicates),
+            'cached': list(self.cached),  # Dateien bereits in der Sammlung
             'location_cache': {}
         }
         
@@ -1121,7 +1241,10 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
             
             # Duplikate laden
             self.duplicates = set(cache_data.get('duplicates', []))
-            
+
+            # Cached-Einträge laden (Dateien bereits in der Sammlung)
+            self.cached = set(cache_data.get('cached', []))
+
             # Location-Cache laden
             location_cache_data = cache_data.get('location_cache', {})
             with self.location_cache_lock:
@@ -1151,7 +1274,17 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
         """Führt Geocoding als separaten, sequenziellen Schritt durch"""
         if not self.use_geocoding:
             return
-            
+
+        # Lade aktuelle Geokoordinaten aus geo_coords.cfg nochmals
+        # (für den Fall, dass die Datei zwischen Läufen aktualisiert wurde)
+        print("🔄 Aktualisiere Geokoordinaten aus geo_coords.cfg...")
+        updated_cache = self.load_geo_cords()
+        with self.location_cache_lock:
+            # Merge: neue Einträge hinzufügen, bestehende behalten
+            for coords, location in updated_cache.items():
+                if coords not in self.location_cache:
+                    self.location_cache[coords] = location
+
         # Sammle alle eindeutigen GPS-Koordinaten ohne Ortsname
         coords_to_process = []
         for photo in self.photos:
@@ -1159,26 +1292,26 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
                 rounded_coords = (round(photo.gps_coords[0], 3), round(photo.gps_coords[1], 3))
                 if rounded_coords not in coords_to_process:
                     coords_to_process.append(rounded_coords)
-        
+
         if not coords_to_process:
             print("🌍 Alle GPS-Koordinaten haben bereits Ortsnamen")
             return
-            
+
         print(f"\n🌍 Starte sequenzielles Geocoding für {len(coords_to_process)} Orte...")
-        
+
         processed_count = 0
         for coords in coords_to_process:
             processed_count += 1
             print(f"📍 Geocoding {processed_count}/{len(coords_to_process)}: {coords[0]:.3f}, {coords[1]:.3f}")
-            
+
             # Überspringe wenn bereits im Cache
             with self.location_cache_lock:
                 if coords in self.location_cache:
                     location = self.location_cache[coords]
-                    if location:
-                        print(f"   ✅ Aus Cache: {location}")
-                    else:
+                    if location is None:
                         print(f"   ❌ Bereits als nicht-verfügbar markiert")
+                    else:
+                        print(f"   ✅ Aus Cache: {location}")
                     continue
             
             # Geocoding durchführen
@@ -1207,30 +1340,44 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
         try:
             # Hash für Duplikat-Erkennung
             file_hash = self.get_file_hash(filepath)
-            
+
+            # Prüfe ob bereits in permanenter Cache vorhanden (wenn aktiviert)
+            if self.compare_with_cache and file_hash in self.cached_hash_dict:
+                # Datei ist bereits in der Sammlung gespeichert
+                self.cached.add(str(filepath))
+                return None
+
             # Thread-sicherer Hash-Cache-Zugriff
             with self.hash_cache_lock:
                 if file_hash in self.hash_cache:
-                    # Duplikat gefunden
+                    # Duplikat gefunden (in dieser Verarbeitung)
                     return None
                 self.hash_cache[file_hash] = str(filepath)
-            
+
             # Zeitstempel extrahieren (Priorität: EXIF > Dateiname > Datei-Zeit)
             photo_datetime = self.get_best_datetime(filepath)
-            
-            # GPS-Koordinaten extrahieren (OHNE Geocoding)
+
+            # GPS-Koordinaten extrahieren (OHNE API-Geocoding)
             gps_coords = self.get_gps_coords(filepath)
-            
+
+            # Prüfe ob GPS-Koordinate bereits in geo_coords.cfg vorhanden ist
+            location_name = None
+            if gps_coords:
+                rounded_coords = (round(gps_coords[0], 3), round(gps_coords[1], 3))
+                with self.location_cache_lock:
+                    if rounded_coords in self.location_cache:
+                        location_name = self.location_cache[rounded_coords]
+
             return PhotoInfo(
                 filepath=filepath,
                 datetime=photo_datetime,
                 gps_coords=gps_coords,
-                location_name=None,  # Wird später in post_process_geocoding() gesetzt
+                location_name=location_name,  # Aus geo_coords.cfg oder None (wird später geocodiert)
                 file_hash=file_hash,
                 file_size=filepath.stat().st_size,
                 is_video=filepath.suffix.lower() in self.video_extensions
             )
-            
+
         except Exception as e:
             print(f"❌ Fehler bei der Verarbeitung von {filepath}: {e}")
             return None
@@ -1293,6 +1440,8 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
         print(f"\n✅ Parallel-Verarbeitung abgeschlossen:")
         print(f"  📸 {len(self.photos)} Fotos/Videos erfolgreich verarbeitet")
         print(f"  🗑️  {duplicates_count} Duplikate gefunden")
+        if self.compare_with_cache and self.cached:
+            print(f"  💾 {len(self.cached)} Dateien bereits in Sammlung (Cache)")
         print(f"  🌍 {len([p for p in self.photos if p.gps_coords])} Fotos mit GPS-Daten")
         
         # EXIF-Statistiken anzeigen
@@ -1383,25 +1532,43 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
             events[event_name] = current_event_photos
     
     def create_event_name(self, photos: List[PhotoInfo]) -> str:
-        """Erstellt Event-Namen basierend auf Zeitraum und optional Ort"""
+        """
+        Erstellt Event-Namen basierend auf Zeitraum und optional Ort.
+        Verwendet konfigurierbare Muster aus [foldernames_target].
+        """
         start_date = min(p.datetime for p in photos)
         end_date = max(p.datetime for p in photos)
-        
+
         # Bestimme dominanten Ort falls GPS-Daten vorhanden
         location_name = self.get_dominant_location(photos)
-        
+
+        # Formatiere die Daten
+        year = start_date.strftime('%Y')
+        start_date_str = start_date.strftime('%Y-%m-%d')
+        end_date_str = end_date.strftime('%Y-%m-%d')
+
+        # Wähle das passende Muster aus der Konfiguration
         if (end_date - start_date).days == 0:
-            # Eintägiges Event
-            base_name = start_date.strftime('%Y/%m-%d')
-            if location_name:
-                return f"{base_name}-{location_name}"
-            return base_name
+            # Eintägiges Event - nutze 'single_day' Muster
+            pattern = self.foldernames_config.get('single_day', '{year}/{start_date}')
         else:
-            # Mehrtägiges Event
-            base_name = f"{start_date.strftime('%Y')}/Event_{start_date.strftime('%Y-%m-%d')}_bis_{end_date.strftime('%Y-%m-%d')}"
-            if location_name:
-                return f"{base_name}-{location_name}"
-            return base_name
+            # Mehrtägiges Event - nutze 'multi_day' Muster
+            pattern = self.foldernames_config.get('multi_day', '{year}/{start_date}_bis_{end_date}')
+
+        # Ersetze Variablen im Muster
+        event_name = pattern.format(
+            year=year,
+            yyyy=year,  # Alias
+            start_date=start_date_str,
+            end_date=end_date_str,
+            location=location_name if location_name else ''
+        )
+
+        # Entferne trailing Bindestriche falls kein Ort vorhanden
+        if not location_name and event_name.endswith('-'):
+            event_name = event_name[:-1]
+
+        return event_name
     
     def get_dominant_location(self, photos: List[PhotoInfo]) -> Optional[str]:
         """Bestimmt den dominanten Ort einer Foto-Gruppe"""
@@ -1576,9 +1743,11 @@ def main():
     parser.add_argument('--cache', help='JSON-Cache-Datei für Photo-Daten (default: auto mit PROJECT_CACHE)')
     parser.add_argument('--addexif', action='store_true', help='Fügt EXIF-Daten basierend auf Dateinamen zu Originaldateien hinzu')
     parser.add_argument('--powershell', action='store_true', help='Erzeugt PowerShell-Script (.ps1) statt Bash-Script (.sh)')
-    
+    parser.add_argument('--compare-with-cache', action='store_true', default=True, help='Vergleicht mit permanenter CSV (default: True)')
+    parser.add_argument('--no-compare-with-cache', action='store_false', dest='compare_with_cache', help='Deaktiviert Vergleich mit permanenter Cache')
+
     args = parser.parse_args()
-    
+
     organizer = PhotoOrganizer(
         source_dir=args.source,
         target_dir=args.target,
@@ -1591,7 +1760,8 @@ def main():
         script_path=args.script_path,
         cache_file=args.cache,
         add_exif=args.addexif,
-        powershell=args.powershell
+        powershell=args.powershell,
+        compare_with_cache=args.compare_with_cache
     )
     
     # Fotos scannen

@@ -31,6 +31,100 @@ def get_env_var(var_name: str, default: str = None) -> str:
     return os.environ.get(var_name, default)
 
 
+def get_project_path(var_name: str, default: str = None) -> Optional[Path]:
+    """
+    Get project path from environment variable.
+
+    Resolves PROJECT_* environment variables (PROJECT_DATA, PROJECT_CACHE, etc.)
+    to absolute paths.
+
+    Args:
+        var_name: Environment variable name (e.g., 'PROJECT_DATA')
+        default: Default path if not set
+
+    Returns:
+        Resolved Path object or None if not set and no default
+    """
+    path_str = os.environ.get(var_name, default)
+    if not path_str:
+        return None
+
+    return normalize_path(path_str)
+
+
+def require_project_path(var_name: str) -> Path:
+    """
+    Get project path from environment variable or raise exception.
+
+    Args:
+        var_name: Environment variable name (e.g., 'PROJECT_CACHE')
+
+    Returns:
+        Resolved Path object
+
+    Raises:
+        ValueError: If environment variable is not set
+    """
+    path = get_project_path(var_name)
+    if not path:
+        raise ValueError(f"{var_name} environment variable not set")
+
+    return path
+
+
+# ============================================================================
+# FILE EXTENSION DEFINITIONS
+# ============================================================================
+
+# Common video file extensions
+VIDEO_EXTENSIONS = {'.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv', '.webm', '.m4v'}
+
+# Common photo file extensions
+PHOTO_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif', '.webp', '.raw', '.heic'}
+
+# All media file extensions
+MEDIA_EXTENSIONS = PHOTO_EXTENSIONS | VIDEO_EXTENSIONS
+
+
+def is_video_file(filepath: Path) -> bool:
+    """
+    Check if file is a video based on extension.
+
+    Args:
+        filepath: Path to file
+
+    Returns:
+        True if file has a video extension
+    """
+    return filepath.suffix.lower() in VIDEO_EXTENSIONS
+
+
+def is_photo_file(filepath: Path) -> bool:
+    """
+    Check if file is a photo based on extension.
+
+    Args:
+        filepath: Path to file
+
+    Returns:
+        True if file has a photo extension
+    """
+    return filepath.suffix.lower() in PHOTO_EXTENSIONS
+
+
+def is_media_file(filepath: Path) -> bool:
+    """
+    Check if file is a photo or video based on extension.
+
+    Args:
+        filepath: Path to file
+
+    Returns:
+        True if file has a media extension
+    """
+    return filepath.suffix.lower() in MEDIA_EXTENSIONS
+
+
 # ============================================================================
 # PATH UTILITIES
 # ============================================================================
@@ -345,6 +439,57 @@ def save_config_section(config_file: Path, section: str, data: Dict[str, str]) -
 
 
 # ============================================================================
+# FILE METADATA EXTRACTION
+# ============================================================================
+
+def get_file_metadata(filepath: Path,
+                     include_hash: bool = False,
+                     hash_algorithm: str = 'sha256') -> Optional[Dict]:
+    """
+    Extract file metadata (size, timestamps, optional hash).
+
+    Args:
+        filepath: Path to file
+        include_hash: Compute file hash (default: False)
+        hash_algorithm: Hash algorithm if include_hash=True (default: sha256)
+
+    Returns:
+        Dict with metadata: {
+            'filepath': str,
+            'file_size': int,
+            'mtime_iso': str,  # Modification time in ISO format
+            'mtime_timestamp': float,  # Modification time as timestamp
+            'is_video': bool,
+            'file_hash': str (if include_hash)
+        }
+        or None if file doesn't exist or error occurs
+    """
+    try:
+        if not validate_file(filepath):
+            return None
+
+        filepath = normalize_path(filepath)
+        stat = filepath.stat()
+
+        metadata = {
+            'filepath': str(filepath),
+            'file_size': stat.st_size,
+            'mtime_iso': datetime.fromtimestamp(stat.st_mtime).isoformat(),
+            'mtime_timestamp': stat.st_mtime,
+            'is_video': is_video_file(filepath),
+        }
+
+        if include_hash:
+            metadata['file_hash'] = get_file_hash(filepath, algorithm=hash_algorithm)
+
+        return metadata
+
+    except Exception as e:
+        print(f"❌ Error extracting metadata for {filepath}: {e}")
+        return None
+
+
+# ============================================================================
 # FILE HASHING
 # ============================================================================
 
@@ -422,6 +567,64 @@ def escape_powershell_path(path: str) -> str:
 
 
 # ============================================================================
+# FILE LISTING UTILITIES
+# ============================================================================
+
+def get_files_by_extensions(directory: Path,
+                            extensions: set = None,
+                            recursive: bool = True) -> List[Path]:
+    """
+    Get all files with specified extensions from directory.
+
+    Args:
+        directory: Directory to scan
+        extensions: Set of file extensions (e.g., {'.jpg', '.png'})
+                   If None, returns all files
+        recursive: Use rglob if True, else glob
+
+    Returns:
+        List of validated file paths
+    """
+    directory = normalize_path(directory)
+    if not validate_directory(directory):
+        return []
+
+    files = []
+
+    if extensions is None:
+        # Get all files
+        pattern = "**/*" if recursive else "*"
+        glob_func = directory.rglob if recursive else directory.glob
+        for item in glob_func("*" if recursive else "*"):
+            if validate_file(item):
+                files.append(item)
+    else:
+        # Get files with specific extensions
+        pattern = "**/*" if recursive else "*"
+        glob_func = directory.rglob if recursive else directory.glob
+
+        for item in glob_func("*" if recursive else "*"):
+            if validate_file(item) and item.suffix.lower() in extensions:
+                files.append(item)
+
+    return sorted(files)
+
+
+def get_file_list(directory: Path, recursive: bool = True) -> List[Path]:
+    """
+    Get all files in directory (convenience wrapper).
+
+    Args:
+        directory: Directory to scan
+        recursive: Use rglob if True, else glob
+
+    Returns:
+        Sorted list of file paths
+    """
+    return get_files_by_extensions(directory, extensions=None, recursive=recursive)
+
+
+# ============================================================================
 # DATETIME UTILITIES
 # ============================================================================
 
@@ -441,6 +644,45 @@ def get_timestamp(format_str: str = '%Y%m%d_%H%M%S') -> str:
 def get_iso_timestamp() -> str:
     """Get ISO format timestamp (for config files)."""
     return datetime.now().isoformat()
+
+
+def format_datetime_for_exif(dt: datetime) -> str:
+    """
+    Format datetime for EXIF tags (YYYY:MM:DD HH:MM:SS).
+
+    Args:
+        dt: Datetime object
+
+    Returns:
+        EXIF-formatted datetime string
+    """
+    return dt.strftime('%Y:%m:%d %H:%M:%S')
+
+
+def parse_exif_datetime(exif_str: str) -> Optional[datetime]:
+    """
+    Parse EXIF datetime string to datetime object.
+
+    Args:
+        exif_str: EXIF datetime string
+
+    Returns:
+        Parsed datetime or None if parsing fails
+    """
+    formats = [
+        '%Y:%m:%d %H:%M:%S',      # Standard EXIF format
+        '%Y-%m-%dT%H:%M:%S.%fZ',  # ISO with microseconds
+        '%Y-%m-%dT%H:%M:%SZ',     # ISO without microseconds
+        '%Y-%m-%d %H:%M:%S'       # Fallback format
+    ]
+
+    for fmt in formats:
+        try:
+            return datetime.strptime(exif_str, fmt)
+        except ValueError:
+            continue
+
+    return None
 
 
 # ============================================================================

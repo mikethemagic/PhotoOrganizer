@@ -11,6 +11,9 @@ from typing import Dict, List, Tuple, Set
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# Import utilities
+from utils import get_file_hash, write_json_file
+
 
 class CacheManager:
     """Manages cache files and updates file paths."""
@@ -108,31 +111,9 @@ class CacheManager:
         video_extensions = {'.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv', '.webm', '.m4v'}
         return file_path.suffix.lower() in video_extensions
 
-    def _get_file_hash(self, file_path: Path, algorithm: str = 'sha256') -> str:
-        """
-        Calculate file hash.
-
-        Args:
-            file_path: Path to the file
-            algorithm: Hash algorithm to use (default: sha256)
-
-        Returns:
-            Hex string of the file hash
-        """
-        hasher = hashlib.new(algorithm)
-        try:
-            with open(file_path, 'rb') as f:
-                while chunk := f.read(8192):
-                    hasher.update(chunk)
-            return hasher.hexdigest()
-        except Exception as e:
-            if False:  # Set to True for verbose output
-                print(f"Warning: Could not hash {file_path}: {e}")
-            return ""
-
     def _hash_file_worker(self, file_path: Path) -> Tuple[Path, str]:
         """Worker function for parallel hashing."""
-        return file_path, self._get_file_hash(file_path)
+        return file_path, get_file_hash(file_path)
 
     def _get_file_metadata(self, file_path: Path, file_hash: str = "") -> dict:
         """
@@ -319,7 +300,7 @@ class CacheManager:
                         cache_data['metadata']['last_updated'] = datetime.now().isoformat()
 
                     # Save the updated cache file
-                    self._save_cache_file(cache_file, cache_data)
+                    write_json_file(cache_file, cache_data)
                     stats["updated_cache_files"].append(cache_file.name)
 
                     if verbose:
@@ -334,16 +315,6 @@ class CacheManager:
 
         return stats
 
-    def _save_cache_file(self, cache_file: Path, data: dict) -> None:
-        """
-        Save cache data to a JSON file.
-
-        Args:
-            cache_file: Path to the cache file
-            data: Dictionary containing cache data
-        """
-        with open(cache_file, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
 
     def print_stats(self, stats: Dict) -> None:
         """Print update statistics in a readable format."""

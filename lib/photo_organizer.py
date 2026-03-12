@@ -24,7 +24,8 @@ from utils import (
     clean_filename, clean_location_name as clean_location_name_util,
     get_file_hash, escape_bash_path, escape_powershell_path,
     get_timestamp as get_timestamp_util, get_most_common_items,
-    write_json_file, read_json_file, write_text_file
+    write_json_file, read_json_file, write_text_file,
+    is_video_file
 )
 
 try:
@@ -560,7 +561,7 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
         # Verwende nur den Namen des Quellverzeichnisses
         source_abs = self.source_dir.resolve()
         source_name = source_abs.name or "root"
-        source_clean = self.clean_filename(source_name)
+        source_clean = clean_filename(source_name)
         
         cache_filename = f"photo_cache_{source_clean}.json"
         
@@ -577,17 +578,7 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
             print(f"🔧 Auto-Cache-Name: {cache_filename}")
             return cache_filename
     
-    def get_timestamp(self) -> str:
-        """Generiert Zeitstempel für eindeutige Script-Namen"""
-        return get_timestamp_util()
 
-    def clean_filename(self, name: str) -> str:
-        """Bereinigt String für Verwendung in Dateinamen"""
-        return clean_filename(name, max_length=20)
-
-    def get_file_hash(self, filepath: Path) -> str:
-        """Berechnet SHA-256 Hash einer Datei für Duplikat-Erkennung"""
-        return get_file_hash(filepath)
     
     def get_datetime_from_filename(self, filepath: Path) -> Optional[datetime]:
         """Extrahiert Datum/Zeit aus Dateinamen (Pattern aus Konfiguration)"""
@@ -1120,8 +1111,8 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
                 for location in location_candidates:
                     if location:
                         # Sonderzeichen für Dateinamen bereinigen
-                        clean_location = self.clean_location_name(location)
-                        
+                        clean_location = clean_location_name_util(location)
+
                         # Thread-sicher in Cache speichern
                         with self.location_cache_lock:
                             self.location_cache[rounded_coords] = clean_location
@@ -1137,9 +1128,6 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
             self.location_cache[rounded_coords] = None
         return None
     
-    def clean_location_name(self, location: str) -> str:
-        """Bereinigt Ortsnamen für Verwendung in Dateinamen"""
-        return clean_location_name_util(location, max_length=30)
     
     def save_cache(self) -> None:
         """Speichert Photo-Daten in JSON-Cache"""
@@ -1339,7 +1327,7 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
         """Verarbeitet eine einzelne Datei (für parallele Ausführung) - OHNE Geocoding"""
         try:
             # Hash für Duplikat-Erkennung
-            file_hash = self.get_file_hash(filepath)
+            file_hash = get_file_hash(filepath)
 
             # Prüfe ob bereits in permanenter Cache vorhanden (wenn aktiviert)
             if self.compare_with_cache and file_hash in self.cached_hash_dict:

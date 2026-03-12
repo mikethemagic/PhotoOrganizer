@@ -568,7 +568,71 @@ def analyze_photos(data_dir=None, target_dir=None, add_missing_geolocations=Fals
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Analyze photos in data directory")
+    examples = """
+EXAMPLES:
+
+  1. Quick analysis of photo files (fast, no EXIF processing):
+     python lib/analyze_photos.py --quick
+
+  2. Quick analysis with custom data directory:
+     python lib/analyze_photos.py D:\\Photos --quick
+
+  3. Detailed analysis with EXIF and metadata processing:
+     python lib/analyze_photos.py
+
+  4. Detailed analysis with custom directories:
+     python lib/analyze_photos.py D:\\Photos D:\\OrganizedPhotos
+
+  5. Detailed analysis with geocoding for missing location data:
+     python lib/analyze_photos.py --add-missing-geolocations
+
+  6. Full analysis: scan, analyze, and geocode all coordinates:
+     python lib/analyze_photos.py D:\\Photos D:\\Results --add-missing-geolocations
+
+TYPICAL WORKFLOW:
+
+  Step 1: Quick check of photo collection
+    python lib/analyze_photos.py --quick
+
+    Shows: File types, total count, size, metadata patterns
+
+  Step 2: Detailed analysis to plan organization
+    python lib/analyze_photos.py
+
+    Shows: EXIF data availability, GPS coverage, location data, outliers
+    Provides: Recommendations for --organize flags
+
+  Step 3: Geocode missing location names (optional)
+    python lib/analyze_photos.py --add-missing-geolocations
+
+    Updates: cfg/geo_coords.cfg with new geocoded locations
+
+  Step 4: Use recommendations for photo organization
+    organize.bat data results --no-geocoding
+    (or with other recommended flags from analysis)
+
+FEATURES:
+
+  --quick:                        Fast analysis (files only, no metadata)
+  --add-missing-geolocations:     Geocode GPS coords without location names
+  data_dir:                       Source photos (default: PROJECT_DATA)
+  target_dir:                     Target directory (default: PROJECT_WORK)
+
+ANALYSIS INCLUDES:
+
+  - File count, types, and total size
+  - Metadata availability (EXIF dates, GPS data)
+  - Date range and duplicate detection
+  - Location information and outlier analysis
+  - Event grouping preview
+  - Recommendations for organization flags
+"""
+
+    parser = argparse.ArgumentParser(
+        description="Analyze photos in data directory",
+        epilog=examples,
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("data_dir", nargs="?", help="Data directory to analyze (default: PROJECT_DATA env var or ./data)")
     parser.add_argument("target_dir", nargs="?", help="Target directory for organization (default: PROJECT_WORK env var or ./results)")
     parser.add_argument("--quick", action="store_true", help="Quick analysis (files only, no EXIF processing)")

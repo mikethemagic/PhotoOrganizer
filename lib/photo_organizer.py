@@ -1728,7 +1728,105 @@ def main():
     default_source = os.environ.get('PROJECT_DATA', './data')
     default_target = os.environ.get('PROJECT_WORK', './results')
 
-    parser = argparse.ArgumentParser(description='Automatische Foto-Organisation')
+    examples = """
+EXAMPLES:
+
+  1. Dry-run: Vorschau der Organisation (keine Dateien werden verschoben):
+     python lib/photo_organizer.py
+
+  2. Mit benutzerdefinierten Verzeichnissen (Vorschau):
+     python lib/photo_organizer.py D:\\Fotos D:\\OrganisierteFotos
+
+  3. Dateien tatsächlich verschieben:
+     python lib/photo_organizer.py --execute
+
+  4. Mit benutzerdefinierten Verzeichnissen und Ausführung:
+     python lib/photo_organizer.py D:\\Fotos D:\\OrganisierteFotos --execute
+
+  5. Mit EXIF-Ergänzung aus Dateinamen:
+     python lib/photo_organizer.py --addexif --execute
+
+  6. Ohne Geocoding (schneller, wenn GPS-Daten nicht benötigt):
+     python lib/photo_organizer.py --no-geocoding --execute
+
+  7. Shell-Script generieren für spätere Ausführung:
+     python lib/photo_organizer.py --generate-script
+
+  8. PowerShell-Script statt Bash-Script:
+     python lib/photo_organizer.py --generate-script --powershell
+
+  9. Mit benutzerdefinierten Event-Einstellungen:
+     python lib/photo_organizer.py --event-max-days 5 --geo-radius 20.0 --execute
+
+ 10. Mit allen Optimierungen:
+     python lib/photo_organizer.py --addexif --no-compare-with-cache --max-workers 8 --execute
+
+TYPICAL WORKFLOW:
+
+  Step 1: Analysiere Fotos und erhalte Empfehlungen
+    python lib/analyze_photos.py --quick
+    python lib/analyze_photos.py
+
+    Output: Empfehlungen für Flags (--no-geocoding, --addexif, etc.)
+
+  Step 2: Vorschau der Organisation (kein --execute)
+    python lib/photo_organizer.py
+
+    Output: Zeigt geplante Ordnerstruktur ohne Dateien zu verschieben
+
+  Step 3: Führe mit empfohlenen Flags aus
+    python lib/photo_organizer.py --no-geocoding --addexif --execute
+
+  Step 4: Cache und Dateitypen aktualisieren (optional)
+    python lib/cache.py --to-permanent
+    python lib/cache.py --folder D:\\OrganisierteFotos
+
+OPTIMIZATION:
+
+  Schnelle Verarbeitung:
+    python lib/photo_organizer.py --no-geocoding --max-workers 8 --execute
+
+  Detaillierte Metadaten:
+    python lib/photo_organizer.py --addexif --execute
+
+  Script-Generierung für Batch-Verarbeitung:
+    python lib/photo_organizer.py --generate-script --powershell
+    powershell -ExecutionPolicy Bypass -File scripts\\photo_move_*.ps1
+
+FEATURES:
+
+  --execute:                  Dateien tatsächlich verschieben (sonst Vorschau)
+  --addexif:                  EXIF-Daten aus Dateinamen hinzufügen
+  --no-geocoding:             Ortsnamen-Geocoding deaktivieren (schneller)
+  --generate-script:          Shell/PowerShell-Script für spätere Ausführung
+  --powershell:               PowerShell-Script (.ps1) statt Bash (.sh)
+  --event-max-days:           Maximale Tage für Event-Zusammenfassung
+  --geo-radius:               GPS-Radius in km für räumliche Gruppierung
+  --same-day-hours:           Stunden-Schwelle für "gleicher Tag"
+  --max-workers:              Parallele Threads (default: auto)
+  --cache:                    JSON-Cache-Datei (default: auto)
+  --compare-with-cache:       Duplikate mit permanenter CSV prüfen (default: ja)
+
+COMMON OPTIONS:
+
+  Schnell (keine GPS/Geocoding):
+    --no-geocoding
+
+  Detailliert (mit Dateimetadaten):
+    --addexif
+
+  Für große Foto-Sammlungen:
+    --max-workers 16 --no-geocoding --execute
+
+  Mit Script-Generierung:
+    --generate-script --powershell
+"""
+
+    parser = argparse.ArgumentParser(
+        description='Automatische Foto-Organisation basierend auf Datum, GPS und Dateinamen',
+        epilog=examples,
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument('source', nargs='?', default=default_source, help=f'Quellverzeichnis mit Fotos (default: {default_source})')
     parser.add_argument('target', nargs='?', default=default_target, help=f'Zielverzeichnis für organisierte Fotos (default: {default_target})')
     parser.add_argument('--execute', action='store_true', help='Dateien tatsächlich verschieben (ohne --execute nur Vorschau)')

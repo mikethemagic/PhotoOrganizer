@@ -691,19 +691,19 @@ def main():
 EXAMPLES:
 
   1. Update cache paths after moving files to new location:
-     python lib/cache.py --folder D:\\Archive\\Photos --cache-dir cache
+     python lib/cache.py --folder D:\\Archive\\Photos 
 
   2. Update cache with verbose output:
-     python lib/cache.py --folder /nas/organized_photos --cache-dir cache --verbose
+     python lib/cache.py --folder /nas/organized_photos  --verbose
 
   3. Build permanent CSV cache from JSON cache files:
-     python lib/cache.py --to-permanent --cache-dir cache
+     python lib/cache.py --to-permanent 
 
   4. Compare archive folder with permanent cache:
-     python lib/cache.py --archive D:\\MyPhotos --compare --cache-dir cache
+     python lib/cache.py --archive D:\\MyPhotos --compare 
 
   5. Compare with verbose output and optional hash computation:
-     python lib/cache.py --archive /backup/photos --compare --cache-dir cache --verbose
+     python lib/cache.py --archive /backup/photos --compare  --verbose
 
 TYPICAL WORKFLOW:
 
@@ -711,16 +711,16 @@ TYPICAL WORKFLOW:
     python lib/cache.py --organize data results --execute
 
   Step 2: Convert JSON cache to permanent CSV
-    python lib/cache.py --to-permanent --cache-dir cache
+    python lib/cache.py --to-permanent 
 
   Step 3: Move organized photos to archive
     cp -r results/* /archive/photos/
 
   Step 4: Update cache to reflect new paths
-    python lib/cache.py --folder /archive/photos --cache-dir cache
+    python lib/cache.py --folder /archive/photos 
 
   Step 5: Compare archive with cache (find any new files)
-    python lib/cache.py --archive /archive/photos --compare --cache-dir cache
+    python lib/cache.py --archive /archive/photos --compare 
 
 FEATURES:
 
@@ -776,6 +776,26 @@ FEATURES:
         parser.print_help()
         print("\nError: --compare requires --archive argument")
         sys.exit(1)
+
+    # Validate folder path exists if specified
+    if args.folder:
+        folder_path = Path(args.folder)
+        if not folder_path.exists():
+            print(f"Error: Folder does not exist: {args.folder}")
+            sys.exit(1)
+        if not folder_path.is_dir():
+            print(f"Error: Path is not a directory: {args.folder}")
+            sys.exit(1)
+
+    # Validate archive path exists if specified
+    if args.archive:
+        archive_path = Path(args.archive)
+        if not archive_path.exists():
+            print(f"Error: Archive folder does not exist: {args.archive}")
+            sys.exit(1)
+        if not archive_path.is_dir():
+            print(f"Error: Archive path is not a directory: {args.archive}")
+            sys.exit(1)
 
     # Get cache directory
     cache_dir = args.cache_dir or os.environ.get('PROJECT_CACHE')

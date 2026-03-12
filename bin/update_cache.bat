@@ -50,28 +50,7 @@ python "%PROJECT_LIB%\cache.py" --help
 exit /b 0
 
 :validate_args
-REM Verify at least one action is specified
-if "%FOLDER_PATH%"=="" if "%ARCHIVE_PATH%"=="" if "%TO_PERMANENT%"=="" (
-    echo Error: Specify --folder, --archive with --compare, or --to-permanent
-    echo Use --help for more information
-    exit /b 1
-)
-
-REM Verify archive folder exists if compare is specified
-if not "%ARCHIVE_PATH%"=="" (
-    if not exist "%ARCHIVE_PATH%" (
-        echo Error: Archive folder does not exist: %ARCHIVE_PATH%
-        exit /b 1
-    )
-)
-
-REM Verify folder exists if folder is specified
-if not "%FOLDER_PATH%"=="" (
-    if not exist "%FOLDER_PATH%" (
-        echo Error: Folder does not exist: %FOLDER_PATH%
-        exit /b 1
-    )
-)
+REM All validation is now done on the Python side
 
 echo.
 echo ============================================================

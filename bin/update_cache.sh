@@ -63,40 +63,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Validate required arguments
-if [ -z "$FOLDER_PATH" ] && [ -z "$ARCHIVE_PATH" ] && [ -z "$TO_PERMANENT" ]; then
-    echo "Error: Specify --folder, --archive with --compare, or --to-permanent"
-    echo "Use --help for more information"
-    exit 1
-fi
-
-# Check if archive folder exists if compare is specified
-if [ -n "$ARCHIVE_PATH" ]; then
-    if [ ! -d "$ARCHIVE_PATH" ]; then
-        echo "Error: Archive folder does not exist: $ARCHIVE_PATH"
-        exit 1
-    fi
-fi
-
-# Check if folder exists if folder is specified
-if [ -n "$FOLDER_PATH" ]; then
-    if [ ! -d "$FOLDER_PATH" ]; then
-        echo "Error: Folder does not exist: $FOLDER_PATH"
-        exit 1
-    fi
-fi
-
-# Check if cache directory exists
-if [ ! -d "$PROJECT_CACHE" ]; then
-    echo "Error: Cache directory does not exist: $PROJECT_CACHE"
-    exit 1
-fi
-
-# Check if cache.py exists
-if [ ! -f "$PROJECT_LIB/cache.py" ]; then
-    echo "Error: Cache script not found: $PROJECT_LIB/cache.py"
-    exit 1
-fi
+# All validation is now done on the Python side
 
 # Display header
 echo ""

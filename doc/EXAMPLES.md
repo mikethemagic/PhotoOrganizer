@@ -263,66 +263,81 @@ organizer = QualityAwareOrganizer(
 )
 ```
 
-### 4. Duplicate Analysis and Cleanup
+### 4. Duplicate Detection and Removal
 
-**Scenario**: Find and handle duplicates across multiple photo collections.
+**Scenario**: Find photos in the source (data) folder that are already present in the permanent cache (i.e. already organised into the collection), and optionally remove them.
+
+#### Step 1 — Inspect duplicates (no files changed)
+
+```bat
+organize.bat --show-duplicates
+```
+
+Sample output:
+
+```text
+🔍 Lade Cache-Hashes...
+  📄 Lade CSV: photo_cache_permanent_20260312_081524.csv
+     9884 Hashes geladen
+  📄 Lade JSON: photo_cache_data.json
+     12 neue Hashes geladen
+✅ 9896 Hashes aus Cache geladen
+
+🔍 Scanne Quelldateien in: C:\10-Develop\gitrepos\PhotoOrganiser\data
+📁 145 Dateien zum Prüfen gefunden
+🚀 Berechne Hashes mit 36 Threads...
+  📊 Progress: 145/145
+
+======================================================================
+DUPLIKAT-BERICHT
+======================================================================
+Geprüfte Dateien: 145
+Duplikate:        128
+Einzigartig:      17
+
+======================================================================
+DUPLIKATE IM QUELLVERZEICHNIS:
+======================================================================
+
+  QUELLE:  IMG_20201210_120000.jpg
+  BEREITS: C:\Users\m.stangl\Nextcloud\Photos\Photos\2020\...
+
+  QUELLE:  Familie.jpg
+  BEREITS: C:\Users\m.stangl\Nextcloud\Photos\Photos\2020\...
+```
+
+#### Step 2 — Remove duplicates
+
+```bat
+organize.bat --remove-duplicates
+```
+
+The same report is printed first, then each duplicate is deleted from the source folder:
+
+```text
+🗑️  Gelöscht: IMG_20201210_120000.jpg
+🗑️  Gelöscht: Familie.jpg
+...
+✅ 128 Duplikate entfernt
+```
+
+> **Safety tip**: Always run `--show-duplicates` first to review what will be deleted. `--remove-duplicates` calls the same detection logic and then permanently deletes the files.
+
+#### Programmatic usage
 
 ```python
 from photo_organizer import PhotoOrganizer
-from pathlib import Path
-import shutil
 
-def find_duplicates_across_collections(collections):
-    """Find duplicates across multiple photo collections."""
-    all_hashes = {}
-    duplicates = {}
-    
-    for collection_name, collection_path in collections.items():
-        organizer = PhotoOrganizer(
-            source_dir=collection_path,
-            target_dir="/tmp/dummy",  # Not used
-            use_geocoding=False  # Faster processing
-        )
-        
-        organizer.scan_photos()
-        
-        for photo in organizer.photos:
-            file_hash = photo.file_hash
-            if file_hash in all_hashes:
-                # Duplicate found
-                if file_hash not in duplicates:
-                    duplicates[file_hash] = {
-                        'original': all_hashes[file_hash],
-                        'duplicates': []
-                    }
-                duplicates[file_hash]['duplicates'].append({
-                    'collection': collection_name,
-                    'path': photo.filepath
-                })
-            else:
-                all_hashes[file_hash] = {
-                    'collection': collection_name,
-                    'path': photo.filepath
-                }
-    
-    return duplicates
+organizer = PhotoOrganizer(
+    source_dir=r"C:\Photos\Inbox",
+    target_dir=r"C:\Photos\Organized"
+)
 
-# Usage
-collections = {
-    'iPhone_Backup': '/backups/iphone',
-    'Android_Backup': '/backups/android',
-    'Old_Computer': '/archive/old_photos'
-}
+# Report only
+organizer.show_duplicates_from_cache()
 
-duplicates = find_duplicates_across_collections(collections)
-
-# Report duplicates
-for file_hash, info in duplicates.items():
-    original = info['original']
-    print(f"\nDuplicate group (hash: {file_hash[:8]}...):")
-    print(f"  Original: {original['collection']}: {original['path']}")
-    for dup in info['duplicates']:
-        print(f"  Duplicate: {dup['collection']}: {dup['path']}")
+# Report + delete
+organizer.remove_duplicates_from_source()
 ```
 
 ## Programmatic API Examples

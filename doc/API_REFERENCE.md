@@ -23,7 +23,8 @@ PhotoOrganizer is an intelligent Python-based photo organization tool that autom
 - **Intelligent timestamp detection**: EXIF → Filename → File modification time
 - **GPS-based location recognition**: Automatic location resolution via OpenStreetMap
 - **Event grouping**: Groups similar photos into events
-- **Duplicate detection**: SHA-256 hash-based duplicate detection
+- **Duplicate detection**: SHA-256 hash-based duplicate detection against JSON/CSV cache
+- **Duplicate removal**: Remove source files already present in the permanent cache
 - **Parallel processing**: Multi-threading for large photo collections
 - **Caching system**: JSON-based caching for repeated runs
 - **Script generation**: Bash/PowerShell scripts for safe execution
@@ -283,6 +284,105 @@ distance = organizer.calculate_distance(berlin, munich)
 print(f"Distance: {distance:.1f} km")
 ```
 
+#### _load_cache_hashes()
+
+Loads all known file hashes from all available CSV and JSON cache files in `PROJECT_CACHE`.
+
+```python
+def _load_cache_hashes(self) -> Optional[Dict[str, str]]
+```
+
+**Returns:**
+
+- `Dict[str, str]` mapping `file_hash → filepath` from the cache, or `None` if no cache is available.
+
+**Cache sources (in order):**
+
+1. All `photo_cache_permanent_*.csv` files (sorted)
+2. All `photo_cache_*.json` files (sorted, adds hashes not already in map)
+
+---
+
+#### _find_duplicates_in_source()
+
+Scans the source directory, hashes every supported file in parallel, and identifies which files are already known in the cache.
+
+```python
+def _find_duplicates_in_source(
+    self,
+    cache_hash_map: Dict[str, str]
+) -> Tuple[List[Tuple[Path, str]], int, int]
+```
+
+**Parameters:**
+
+- `cache_hash_map`: Hash → filepath mapping from `_load_cache_hashes()`
+
+**Returns:**
+
+- `(duplicates, unique_count, error_count)` where `duplicates` is a sorted list of `(source_path, cached_path)` tuples.
+
+---
+
+#### _print_duplicates_report()
+
+Prints a formatted duplicate report to the console.
+
+```python
+def _print_duplicates_report(
+    self,
+    duplicates: List[Tuple[Path, str]],
+    total_files: int,
+    unique_count: int,
+    error_count: int
+) -> None
+```
+
+---
+
+#### show_duplicates_from_cache()
+
+Compares all source files against cached hashes and prints a report. No files are modified.
+
+```python
+def show_duplicates_from_cache(self) -> None
+```
+
+**Description:**
+
+- Calls `_load_cache_hashes()` → `_find_duplicates_in_source()` → `_print_duplicates_report()`
+- For each duplicate shows: relative source path and the cached filepath where the file already exists.
+
+**Example:**
+```python
+organizer.show_duplicates_from_cache()
+```
+
+---
+
+#### remove_duplicates_from_source()
+
+Compares all source files against cached hashes, prints the report, then **permanently deletes** the duplicate files from the source directory.
+
+```python
+def remove_duplicates_from_source(self) -> None
+```
+
+**Description:**
+
+- Calls `_load_cache_hashes()` → `_find_duplicates_in_source()` → `_print_duplicates_report()`
+- Then deletes each duplicate file via `Path.unlink()`
+- Prints a deletion summary (removed count + errors)
+
+> **Warning:** Files are deleted immediately without moving to trash. Use `--show-duplicates` first to verify what will be removed.
+
+**Example:**
+```python
+organizer.remove_duplicates_from_source()
+```
+
+---
+
 #### save_cache() / load_cache()
 
 Save and load photo metadata to/from JSON cache.
@@ -363,6 +463,8 @@ python photo_organizer.py <source_dir> <target_dir> [options]
 | `--execute` | Actually move files (without this, only preview) | Preview only |
 | `--generate-script` | Generate shell script for later execution | Disabled |
 | `--addexif` | Add EXIF data based on filenames | Disabled |
+| `--show-duplicates` | Compare source files against cache hashes and print a report; no files modified | Disabled |
+| `--remove-duplicates` | Compare source files against cache hashes, print report, then delete duplicates from source | Disabled |
 
 #### Event Configuration
 

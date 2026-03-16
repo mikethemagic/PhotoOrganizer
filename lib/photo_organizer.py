@@ -543,7 +543,7 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
             
             # Bestimme Dateiendung basierend auf Script-Typ
             extension = ".ps1" if self.powershell else ".sh"
-            script_filename = f"photo_move_{self.get_timestamp()}{extension}"
+            script_filename = f"photo_move_{get_timestamp_util()}{extension}"
             script_path = scripts_dir / script_filename
             print(f"🔧 Verwende PROJECT_SCRIPTS: {script_path}")
             return str(script_path)
@@ -1708,6 +1708,198 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
         if self.duplicates:
             print(f"🗑️  {len(self.duplicates)} Duplikate übersprungen")
 
+    def _load_cache_hashes(self) -> Optional[Dict[str, str]]:
+        """
+        Lädt alle bekannten Hashes aus CSV- und JSON-Cache-Dateien.
+
+        Returns:
+            Dict hash -> filepath, oder None wenn kein Cache verfügbar.
+        """
+        import csv
+
+        print("🔍 Lade Cache-Hashes...")
+
+        project_cache = os.environ.get('PROJECT_CACHE')
+        if not project_cache:
+            print("⚠️  PROJECT_CACHE nicht gesetzt. Kein Cache verfügbar.")
+            return None
+
+        cache_dir = Path(project_cache)
+        if not cache_dir.exists():
+            print(f"⚠️  Cache-Verzeichnis nicht gefunden: {cache_dir}")
+            return None
+
+        cache_hash_map: Dict[str, str] = {}
+
+        for csv_file in sorted(cache_dir.glob('photo_cache_permanent_*.csv')):
+            print(f"  📄 Lade CSV: {csv_file.name}")
+            try:
+                with open(csv_file, 'r', encoding='utf-8') as f:
+                    reader = csv.DictReader(f, delimiter=';')
+                    count = 0
+                    for row in reader:
+                        file_hash = row.get('file_hash', '').strip()
+                        filepath = row.get('filepath', '').strip()
+                        if file_hash and filepath:
+                            cache_hash_map[file_hash] = filepath
+                            count += 1
+                print(f"     {count} Hashes geladen")
+            except Exception as e:
+                print(f"⚠️  Fehler beim Lesen von {csv_file.name}: {e}")
+
+        for json_file in sorted(cache_dir.glob('photo_cache_*.json')):
+            print(f"  📄 Lade JSON: {json_file.name}")
+            try:
+                with open(json_file, 'r', encoding='utf-8') as f:
+                    cache_data = json.load(f)
+                count = 0
+                for photo in cache_data.get('photos', []):
+                    file_hash = photo.get('file_hash', '').strip()
+                    filepath = photo.get('filepath', '').strip()
+                    if file_hash and filepath and file_hash not in cache_hash_map:
+                        cache_hash_map[file_hash] = filepath
+                        count += 1
+                print(f"     {count} neue Hashes geladen")
+            except Exception as e:
+                print(f"⚠️  Fehler beim Lesen von {json_file.name}: {e}")
+
+        if not cache_hash_map:
+            print("⚠️  Keine Hashes in Cache gefunden.")
+            return None
+
+        print(f"✅ {len(cache_hash_map)} Hashes aus Cache geladen")
+        return cache_hash_map
+
+    def _find_duplicates_in_source(self, cache_hash_map: Dict[str, str]) -> Tuple[List[Tuple[Path, str]], int, int]:
+        """
+        Scannt das Quellverzeichnis und findet Dateien, deren Hash im Cache bekannt ist.
+
+        Args:
+            cache_hash_map: Dict hash -> filepath aus dem Cache.
+
+        Returns:
+            (duplicates, unique_count, error_count)
+            duplicates: List of (source_path, cached_path)
+        """
+        print(f"\n🔍 Scanne Quelldateien in: {self.source_dir}")
+
+        all_files = [
+            f for f in self.source_dir.rglob('*')
+            if f.is_file() and f.suffix.lower() in self.supported_extensions
+        ]
+
+        print(f"📁 {len(all_files)} Dateien zum Prüfen gefunden")
+        print(f"🚀 Berechne Hashes mit {self.max_workers} Threads...")
+
+        duplicates_found = []
+        unique_count = 0
+        error_count = 0
+
+        def hash_and_check(filepath: Path):
+            file_hash = get_file_hash(filepath)
+            if not file_hash:
+                return filepath, None, None
+            cached_path = cache_hash_map.get(file_hash)
+            return filepath, cached_path, file_hash
+
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            future_to_file = {executor.submit(hash_and_check, f): f for f in all_files}
+            processed = 0
+            for future in as_completed(future_to_file):
+                processed += 1
+                if processed % 100 == 0 or processed == len(all_files):
+                    print(f"  📊 Progress: {processed}/{len(all_files)}")
+                try:
+                    filepath, cached_path, file_hash = future.result()
+                    if file_hash is None:
+                        error_count += 1
+                    elif cached_path:
+                        duplicates_found.append((filepath, cached_path))
+                    else:
+                        unique_count += 1
+                except Exception as e:
+                    print(f"❌ Fehler: {e}")
+                    error_count += 1
+
+        duplicates_found.sort(key=lambda x: str(x[0]))
+        return duplicates_found, unique_count, error_count
+
+    def _print_duplicates_report(self, duplicates: List[Tuple[Path, str]], total_files: int, unique_count: int, error_count: int) -> None:
+        """Gibt den Duplikat-Bericht auf der Konsole aus."""
+        print(f"\n{'='*70}")
+        print(f"DUPLIKAT-BERICHT")
+        print(f"{'='*70}")
+        print(f"Geprüfte Dateien: {total_files}")
+        print(f"Duplikate:        {len(duplicates)}")
+        print(f"Einzigartig:      {unique_count}")
+        if error_count:
+            print(f"Fehler:           {error_count}")
+
+        if duplicates:
+            print(f"\n{'='*70}")
+            print(f"DUPLIKATE IM QUELLVERZEICHNIS:")
+            print(f"{'='*70}")
+            for src_file, cached_path in duplicates:
+                try:
+                    rel_src = src_file.relative_to(self.source_dir)
+                except ValueError:
+                    rel_src = src_file
+                print(f"\n  QUELLE:  {rel_src}")
+                print(f"  BEREITS: {cached_path}")
+        else:
+            print("\n✅ Keine Duplikate gefunden.")
+
+    def show_duplicates_from_cache(self) -> None:
+        """Zeigt Duplikate im Quellverzeichnis verglichen mit Cache-Dateien."""
+        cache_hash_map = self._load_cache_hashes()
+        if cache_hash_map is None:
+            return
+
+        duplicates, unique_count, error_count = self._find_duplicates_in_source(cache_hash_map)
+        total = len(duplicates) + unique_count + error_count
+        self._print_duplicates_report(duplicates, total, unique_count, error_count)
+
+    def remove_duplicates_from_source(self) -> None:
+        """
+        Entfernt Duplikate aus dem Quellverzeichnis.
+        Dateien, deren Hash im Cache bekannt ist, werden gelöscht.
+        Gibt zuerst den Bericht aus, dann werden die Dateien entfernt.
+        """
+        cache_hash_map = self._load_cache_hashes()
+        if cache_hash_map is None:
+            return
+
+        duplicates, unique_count, error_count = self._find_duplicates_in_source(cache_hash_map)
+        total = len(duplicates) + unique_count + error_count
+        self._print_duplicates_report(duplicates, total, unique_count, error_count)
+
+        if not duplicates:
+            return
+
+        print(f"\n{'='*70}")
+        print(f"ENTFERNE {len(duplicates)} DUPLIKATE AUS QUELLVERZEICHNIS...")
+        print(f"{'='*70}")
+
+        removed = 0
+        remove_errors = 0
+        for src_file, cached_path in duplicates:
+            try:
+                src_file.unlink()
+                try:
+                    rel_src = src_file.relative_to(self.source_dir)
+                except ValueError:
+                    rel_src = src_file
+                print(f"  🗑️  Gelöscht: {rel_src}")
+                removed += 1
+            except Exception as e:
+                print(f"  ❌ Fehler beim Löschen von {src_file.name}: {e}")
+                remove_errors += 1
+
+        print(f"\n✅ {removed} Duplikate entfernt")
+        if remove_errors:
+            print(f"❌ {remove_errors} Fehler beim Löschen")
+
+
 def main():
     """Hauptfunktion mit Beispiel-Verwendung"""
     import argparse
@@ -1831,6 +2023,8 @@ COMMON OPTIONS:
     parser.add_argument('--powershell', action='store_true', help='Erzeugt PowerShell-Script (.ps1) statt Bash-Script (.sh)')
     parser.add_argument('--compare-with-cache', action='store_true', default=True, help='Vergleicht mit permanenter CSV (default: True)')
     parser.add_argument('--no-compare-with-cache', action='store_false', dest='compare_with_cache', help='Deaktiviert Vergleich mit permanenter Cache')
+    parser.add_argument('--show-duplicates', action='store_true', help='Zeigt Duplikate im Quellverzeichnis verglichen mit JSON/CSV-Cache-Dateien')
+    parser.add_argument('--remove-duplicates', action='store_true', help='Entfernt Duplikate aus dem Quellverzeichnis (Dateien, die bereits im Cache bekannt sind)')
 
     args = parser.parse_args()
 
@@ -1849,7 +2043,15 @@ COMMON OPTIONS:
         powershell=args.powershell,
         compare_with_cache=args.compare_with_cache
     )
-    
+
+    if args.show_duplicates:
+        organizer.show_duplicates_from_cache()
+        return
+
+    if args.remove_duplicates:
+        organizer.remove_duplicates_from_source()
+        return
+
     # Fotos scannen
     organizer.scan_photos()
     

@@ -350,6 +350,222 @@ class CacheManager:
             if len(stats['files_added']) > 10:
                 print(f"  ... and {len(stats['files_added']) - 10} more")
 
+    def _read_archive_folders_from_config(self, config_path: str) -> List[str]:
+        """Read archive_folder section paths from config file."""
+        import configparser
+        config = configparser.ConfigParser()
+        config.read(config_path, encoding='utf-8')
+        folders = []
+        if 'archive_folder' in config:
+            for key, value in config['archive_folder'].items():
+                folders.append(value.strip())
+        return folders
+
+    def check_and_promote_to_permanent(
+        self,
+        config_path: str,
+        data_dir: str = None,
+        few_files_threshold: int = 20,
+        verbose: bool = False,
+        dry_run: bool = False
+    ) -> bool:
+        """
+        Check if all JSON cache entries are confirmed in archive folders, then
+        promote them to the permanent CSV and archive the JSON file.
+
+        Steps:
+        1. Optionally check data_dir file count as a precondition indicator.
+        2. Load all JSON cache entries.
+        3. Read archive_folder paths from the config file.
+        4. Categorise entries: confirmed in archive / path matches but file missing / not in archive.
+        5. Promote only if every entry resolves to an archive path.
+        6. Append confirmed entries to the most recent permanent CSV (or create a new one).
+        7. Rename the processed JSON to *.json.promoted so it is no longer re-loaded.
+
+        Args:
+            config_path:          Path to photo_organizer.cfg.
+            data_dir:             Source/data directory (optional – used for file-count info).
+            few_files_threshold:  Warn if data_dir has more files than this (default 20).
+            verbose:              Print individual problem files.
+            dry_run:              Report only, make no changes.
+
+        Returns:
+            True if promotion happened (or would happen in dry_run), False otherwise.
+        """
+        print("\n" + "=" * 60)
+        print("CACHE-PRÜFUNG & PROMOTE -> PERMANENT CSV")
+        print("=" * 60)
+
+        # --- optional: data_dir file count --------------------------------
+        if data_dir:
+            data_path = Path(data_dir)
+            if data_path.exists():
+                data_files = [f for f in data_path.iterdir() if f.is_file()]
+                n = len(data_files)
+                tag = "[OK]" if n <= few_files_threshold else "[WARN]"
+                print(f"\n{tag} Quelldateien im data-Ordner: {n} (Schwellwert: {few_files_threshold})")
+            else:
+                print(f"\n[WARN] Quellordner nicht gefunden: {data_dir}")
+
+        # --- load JSON cache entries ---------------------------------------
+        json_files = [f for f in self.cache_files if f.suffix == '.json']
+        if not json_files:
+            print("\n[ERROR] Keine JSON-Cache-Dateien gefunden.")
+            return False
+
+        all_entries: List[tuple] = []   # (entry_dict, json_path)
+        for json_file in sorted(json_files):
+            try:
+                with open(json_file, 'r', encoding='utf-8') as f:
+                    cache_data = json.load(f)
+                photos = cache_data.get('photos', [])
+                print(f"\n  [FILE] {json_file.name}: {len(photos)} Eintraege")
+                for photo in photos:
+                    all_entries.append((photo, json_file))
+            except Exception as e:
+                print(f"  [WARN] Fehler beim Laden von {json_file.name}: {e}")
+
+        if not all_entries:
+            print("\n[ERROR] Keine Eintraege in JSON-Cache.")
+            return False
+        print(f"\n  Gesamt: {len(all_entries)} Eintraege in JSON-Cache")
+
+        # --- read archive folders from config ----------------------------
+        archive_folders = self._read_archive_folders_from_config(config_path)
+        if not archive_folders:
+            print(f"\n[ERROR] Keine [archive_folder]-Sektion in Config gefunden: {config_path}")
+            return False
+
+        print(f"\n  Archiv-Ordner:")
+        for af in archive_folders:
+            tag = "[OK]" if Path(af).exists() else "[MISSING]"
+            print(f"    {tag}  {af}")
+
+        # Normalise separators for prefix comparison
+        archive_prefixes = [af.replace('/', '\\').rstrip('\\') + '\\' for af in archive_folders]
+
+        # --- categorise entries -------------------------------------------
+        confirmed: List[tuple] = []    # in archive path AND file exists
+        missing: List[tuple] = []      # in archive path BUT file missing on disk
+        not_archived: List[tuple] = [] # filepath NOT under any archive folder
+
+        for entry, json_file in all_entries:
+            filepath = entry.get('filepath', '')
+            if not filepath:
+                continue
+            fp_norm = filepath.replace('/', '\\')
+            in_archive = any(
+                fp_norm.lower().startswith(prefix.lower())
+                for prefix in archive_prefixes
+            )
+            if in_archive:
+                if Path(filepath).exists():
+                    confirmed.append((entry, json_file))
+                else:
+                    missing.append((entry, json_file))
+            else:
+                not_archived.append((entry, json_file))
+
+        print(f"\n{'=' * 60}")
+        print("ERGEBNIS")
+        print(f"{'=' * 60}")
+        print(f"  [OK]      Im Archiv vorhanden:     {len(confirmed)}")
+        print(f"  [MISSING] Im Archiv-Pfad, fehlt:   {len(missing)}")
+        print(f"  [OUT]     Nicht im Archiv-Pfad:    {len(not_archived)}")
+
+        if verbose:
+            if missing:
+                print("\n  Dateien im Archiv-Pfad aber nicht (mehr) vorhanden:")
+                for entry, _ in missing[:10]:
+                    print(f"    - {entry['filepath']}")
+                if len(missing) > 10:
+                    print(f"    ... und {len(missing) - 10} weitere")
+            if not_archived:
+                print("\n  Dateien ausserhalb der Archiv-Ordner:")
+                for entry, _ in not_archived[:10]:
+                    print(f"    - {entry['filepath']}")
+                if len(not_archived) > 10:
+                    print(f"    ... und {len(not_archived) - 10} weitere")
+
+        # --- decide whether to promote ------------------------------------
+        if not_archived:
+            print(f"\n[WARN] {len(not_archived)} Eintraege sind noch nicht im Archiv-Pfad.")
+            print("   Fuehre zuerst photo_organizer.py --execute aus und aktualisiere die")
+            print("   Cache-Pfade mit cache.py --folder <archiv>.")
+            return False
+
+        promotable = confirmed + missing
+        if not promotable:
+            print("\n[ERROR] Keine Eintraege zum Promoten gefunden.")
+            return False
+
+        print(f"\n  {len(promotable)} Eintraege werden in permanenten Cache uebertragen...")
+        if dry_run:
+            print("   [DRY-RUN] Keine Aenderungen vorgenommen.")
+            return True
+
+        # --- write to permanent CSV --------------------------------------
+        column_order = [
+            'created', 'source_dir', 'target_dir', 'total_photos',
+            'duplicates_count', 'last_updated', 'filepath', 'datetime',
+            'file_hash', 'file_size', 'is_video',
+        ]
+        now = datetime.now()
+        rows = []
+        for entry, _ in promotable:
+            rows.append({
+                'created': now.isoformat(),
+                'source_dir': '',
+                'target_dir': '',
+                'total_photos': '',
+                'duplicates_count': '',
+                'last_updated': now.isoformat(),
+                'filepath': entry.get('filepath', ''),
+                'datetime': entry.get('datetime', ''),
+                'file_hash': entry.get('file_hash', ''),
+                'file_size': entry.get('file_size', ''),
+                'is_video': entry.get('is_video', ''),
+            })
+
+        permanent_files = self._find_permanent_cache_files()
+        if permanent_files:
+            target_csv = permanent_files[0]
+            print(f"  -> Fuege hinzu zu: {target_csv.name}")
+            try:
+                with open(target_csv, 'a', newline='', encoding='utf-8') as f:
+                    writer = csv.DictWriter(f, fieldnames=column_order, delimiter=';')
+                    writer.writerows(rows)
+                print(f"  [OK] {len(rows)} Eintraege hinzugefuegt.")
+            except Exception as e:
+                print(f"  [ERROR] Fehler beim Schreiben: {e}")
+                return False
+        else:
+            timestamp = now.strftime('%Y%m%d_%H%M%S')
+            output_file = self.cache_dir / f"photo_cache_permanent_{timestamp}.csv"
+            print(f"  -> Erstelle: {output_file.name}")
+            try:
+                with open(output_file, 'w', newline='', encoding='utf-8') as f:
+                    writer = csv.DictWriter(f, fieldnames=column_order, delimiter=';')
+                    writer.writeheader()
+                    writer.writerows(rows)
+                print(f"  [OK] Erstellt mit {len(rows)} Eintraegen.")
+            except Exception as e:
+                print(f"  [ERROR] Fehler beim Erstellen: {e}")
+                return False
+
+        # --- archive the JSON file(s) ------------------------------------
+        promoted_json_files: Set[Path] = {jf for _, jf in promotable}
+        for json_path in promoted_json_files:
+            archived_name = json_path.with_name(json_path.name + '.promoted')
+            try:
+                json_path.rename(archived_name)
+                print(f"  [ARCHIVED] {json_path.name} -> {archived_name.name}")
+            except Exception as e:
+                print(f"  [WARN] Konnte JSON nicht umbenennen ({json_path.name}): {e}")
+
+        print(f"\n[SUCCESS] Promote abgeschlossen: {len(rows)} Eintraege uebertragen.")
+        return True
+
     def _find_permanent_cache_files(self) -> List[Path]:
         """Find all permanent CSV cache files in the cache directory."""
         if not self.cache_dir.exists():
@@ -676,30 +892,35 @@ EXAMPLES:
   5. Compare with verbose output and optional hash computation:
      python lib/cache.py --archive /backup/photos --compare  --verbose
 
+  6. Prüfe ob JSON-Einträge im Archiv sind und übertrage sie in permanente CSV:
+     python lib/cache.py --promote --config cfg/photo_organizer.cfg
+
+  7. Promote mit Quellordner-Anzeige und Dry-Run:
+     python lib/cache.py --promote --config cfg/photo_organizer.cfg --data-dir data --dry-run --verbose
+
 TYPICAL WORKFLOW:
 
   Step 1: Organize and cache photos
-    python lib/cache.py --organize data results --execute
+    python lib/photo_organizer.py --execute
 
-  Step 2: Convert JSON cache to permanent CSV
-    python lib/cache.py --to-permanent 
+  Step 2: Update cache paths to archive location
+    python lib/cache.py --folder C:\\Users\\...\\Nextcloud\\Photos
 
-  Step 3: Move organized photos to archive
-    cp -r results/* /archive/photos/
+  Step 3: Check that archived files are confirmed, then promote JSON -> permanent CSV
+    python lib/cache.py --promote --config cfg/photo_organizer.cfg --data-dir data
 
-  Step 4: Update cache to reflect new paths
-    python lib/cache.py --folder /archive/photos 
-
-  Step 5: Compare archive with cache (find any new files)
-    python lib/cache.py --archive /archive/photos --compare 
+  Step 4: Compare archive with cache (find any new files not yet in cache)
+    python lib/cache.py --archive /archive/photos --compare
 
 FEATURES:
 
-  --folder:      Update cache with new file paths (fast, no hash recalculation)
-  --to-permanent: Build permanent CSV from JSON cache (one-time operation)
-  --compare:     Compare archive folder with permanent cache (identify missing files)
-  --verbose:     Show detailed progress during operations
-  --cache-dir:   Specify custom cache directory (default: PROJECT_CACHE env var)
+  --folder:        Update cache with new file paths (fast, no hash recalculation)
+  --to-permanent:  Build permanent CSV from JSON cache (one-time operation)
+  --compare:       Compare archive folder with permanent cache (identify missing files)
+  --promote:       Prüft JSON-Einträge gegen archive_folder und überträgt sie in permanente CSV
+  --dry-run:       Zeigt Aktionen an ohne Änderungen durchzuführen (mit --promote)
+  --verbose:       Show detailed progress during operations
+  --cache-dir:     Specify custom cache directory (default: PROJECT_CACHE env var)
 """
 
     parser = argparse.ArgumentParser(
@@ -734,13 +955,37 @@ FEATURES:
         action='store_true',
         help='Compare archive folder with permanent cache (requires --archive)'
     )
+    parser.add_argument(
+        '--promote',
+        action='store_true',
+        help='Prüft ob JSON-Cache-Einträge im Archiv vorhanden sind und überträgt sie in die permanente CSV'
+    )
+    parser.add_argument(
+        '--config',
+        help='Pfad zur photo_organizer.cfg (für archive_folder-Pfade, erforderlich bei --promote)'
+    )
+    parser.add_argument(
+        '--data-dir',
+        help='Pfad zum Quellordner (optional, für Dateianzahl-Anzeige bei --promote)'
+    )
+    parser.add_argument(
+        '--few-files',
+        type=int,
+        default=20,
+        help='Schwellwert für "wenig Quelldateien" (Standard: 20, nur bei --promote)'
+    )
+    parser.add_argument(
+        '--dry-run',
+        action='store_true',
+        help='Zeigt Aktionen an, führt aber keine Änderungen durch'
+    )
 
     args = parser.parse_args()
 
     # Validate arguments
-    if not args.folder and not args.to_permanent and not args.compare:
+    if not args.folder and not args.to_permanent and not args.compare and not args.promote:
         parser.print_help()
-        print("\nError: Specify --folder, --to-permanent, or --compare")
+        print("\nError: Specify --folder, --to-permanent, --compare, or --promote")
         sys.exit(1)
 
     if args.compare and not args.archive:
@@ -774,10 +1019,24 @@ FEATURES:
         print("Error: Cache directory not specified. Use --cache-dir or set PROJECT_CACHE")
         sys.exit(1)
 
+    if args.promote and not args.config:
+        print("Error: --promote requires --config (Pfad zur photo_organizer.cfg)")
+        sys.exit(1)
+
     try:
         manager = CacheManager(cache_dir)
 
-        if args.compare:
+        if args.promote:
+            success = manager.check_and_promote_to_permanent(
+                config_path=args.config,
+                data_dir=getattr(args, 'data_dir', None),
+                few_files_threshold=args.few_files,
+                verbose=args.verbose,
+                dry_run=args.dry_run,
+            )
+            sys.exit(0 if success else 1)
+
+        elif args.compare:
             # Compare archive with cache
             stats = manager.compare_archive_with_cache(args.archive, verbose=args.verbose)
 

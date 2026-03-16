@@ -294,8 +294,8 @@ class PhotoOrganizer:
 
             # Load unknown coordinates from [unknown] section
             # These won't be re-queried via API
+            unknown_count = 0
             if 'unknown' in config:
-                unknown_count = 0
                 for key in config['unknown'].keys():
                     try:
                         # Parse Koordinaten aus dem Key "lat,lon"
@@ -311,12 +311,11 @@ class PhotoOrganizer:
                         print(f"⚠️  Ungültiges Koordinatenformat in [unknown]: '{key}' -> {e}")
                         continue
 
-                if unknown_count > 0 and default_patterns:
-                    print(f"🔧 {len(default_patterns)} Pattern aus Config geladen ({unknown_count} unbekannt): {geoconfig_file}")
-                    return default_patterns
-                elif default_patterns:
-                    print(f"🔧 {len(default_patterns)} Pattern aus Config geladen: {geoconfig_file}")
-                    return default_patterns
+            if unknown_count > 0:
+                print(f"🔧 {len(default_patterns)} Pattern aus Config geladen ({unknown_count} unbekannt): {geoconfig_file}")
+            else:
+                print(f"🔧 {len(default_patterns)} Pattern aus Config geladen: {geoconfig_file}")
+            return default_patterns
 
         except Exception as e:
             print(f"⚠️  Fehler beim Laden der Config: {e}")
@@ -1214,14 +1213,15 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
                         skipped_files += 1
                         continue
 
+                    gps_raw = photo_data.get('gps_coords')
                     photo = PhotoInfo(
                         filepath=filepath,
                         datetime=datetime.fromisoformat(photo_data['datetime']),
-                        gps_coords=tuple(photo_data['gps_coords']) if photo_data['gps_coords'] else None,
+                        gps_coords=tuple(gps_raw) if gps_raw else None,
                         location_name=photo_data.get('location_name'),
-                        file_hash=photo_data['file_hash'],
-                        file_size=photo_data['file_size'],
-                        is_video=photo_data['is_video']
+                        file_hash=photo_data.get('file_hash', ''),
+                        file_size=photo_data.get('file_size', 0),
+                        is_video=photo_data.get('is_video', False)
                     )
                     self.photos.append(photo)
                 except Exception as e:
@@ -1941,6 +1941,12 @@ EXAMPLES:
  10. Mit allen Optimierungen:
      python lib/photo_organizer.py --addexif --no-compare-with-cache --max-workers 8 --execute
 
+ 11. Duplikate anzeigen (Quelldateien die schon im Cache vorhanden sind):
+     python lib/photo_organizer.py --show-duplicates
+
+ 12. Duplikate aus Quellverzeichnis löschen:
+     python lib/photo_organizer.py --remove-duplicates
+
 TYPICAL WORKFLOW:
 
   Step 1: Analysiere Fotos und erhalte Empfehlungen
@@ -1960,6 +1966,10 @@ TYPICAL WORKFLOW:
   Step 4: Cache und Dateitypen aktualisieren (optional)
     python lib/cache.py --to-permanent
     python lib/cache.py --folder D:\\OrganisierteFotos
+
+  Step 5: Duplikate im Quellverzeichnis prüfen und entfernen
+    python lib/photo_organizer.py --show-duplicates
+    python lib/photo_organizer.py --remove-duplicates
 
 OPTIMIZATION:
 
@@ -1986,6 +1996,8 @@ FEATURES:
   --max-workers:              Parallele Threads (default: auto)
   --cache:                    JSON-Cache-Datei (default: auto)
   --compare-with-cache:       Duplikate mit permanenter CSV prüfen (default: ja)
+  --show-duplicates:          Zeigt Quelldateien die bereits im Cache bekannt sind (kein Löschen)
+  --remove-duplicates:        Löscht Quelldateien die bereits im Cache bekannt sind
 
 COMMON OPTIONS:
 

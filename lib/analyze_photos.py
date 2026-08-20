@@ -54,8 +54,8 @@ def analyze_photos_quick(data_dir=None):
     }
 
     # Supported extensions
-    photo_exts = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp', '.raw', '.heic'}
-    video_exts = {'.mp4', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.m4v', '.webm'}
+    photo_exts = {'.jpg', '.JPG', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp', '.raw', '.heic'}
+    video_exts = {'.mp4', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.m4v', '.webm', '.3gp', '.3g2'}
 
     # Scan files
     for filepath in sorted(data_path.rglob('*')):

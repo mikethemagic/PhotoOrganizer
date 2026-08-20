@@ -108,7 +108,7 @@ class CacheManager:
 
     def _is_video(self, file_path: Path) -> bool:
         """Check if file is a video based on extension."""
-        video_extensions = {'.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv', '.webm', '.m4v'}
+        video_extensions = {'.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv', '.webm', '.m4v', '.3gp', '.3g2'}
         return file_path.suffix.lower() in video_extensions
 
     def _hash_file_worker(self, file_path: Path) -> Tuple[Path, str]:

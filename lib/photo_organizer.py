@@ -125,8 +125,8 @@ class PhotoOrganizer:
             cache_file = self.generate_cache_filename()
         self.cache_file = Path(cache_file) if cache_file else None
         
-        self.supported_extensions = {'.jpg', '.jpeg', '.png', '.tiff', '.tif', '.mov', '.mp4', '.avi', '.vid'}
-        self.video_extensions = {'.mov', '.mp4', '.avi', '.vid'}
+        self.supported_extensions = {'.jpg', '.jpeg', '.png', '.tiff', '.tif', '.mov', '.mp4', '.avi', '.vid', '.3gp', '.3g2'}
+        self.video_extensions = {'.mov', '.mp4', '.avi', '.vid', '.3gp', '.3g2'}
         self.exif_writable_extensions = {'.jpg', '.jpeg', '.tiff', '.tif'}  # Formate die EXIF unterstützen
         
         self.photos: List[PhotoInfo] = []
@@ -1372,47 +1372,76 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
     
     def scan_photos(self) -> None:
         """Scannt alle Fotos im Quellverzeichnis mit paralleler Verarbeitung"""
-        
+
         # Versuche Cache zu laden
         if self.cache_file and self.load_cache():
             print("📂 Verwende Daten aus Cache")
+            self._scan_new_files()
             return
-        
+
         print(f"🔍 Scanne Fotos in: {self.source_dir}")
-        
-        # Sammle alle zu verarbeitenden Dateien
+        all_files = self._collect_source_files()
+        self._process_and_finalize(all_files)
+
+    def _collect_source_files(self) -> List[Path]:
+        """Sammelt alle unterstützten Mediendateien im Quellverzeichnis"""
         all_files = []
         for filepath in self.source_dir.rglob('*'):
             # Validate: is_file() checks during scan, exists() prevents race conditions
             if filepath.is_file() and filepath.exists() and filepath.suffix.lower() in self.supported_extensions:
                 all_files.append(filepath)
-        
+        return all_files
+
+    def _scan_new_files(self) -> None:
+        """Prüft das Quellverzeichnis auf Dateien, die im geladenen Cache noch fehlen,
+        und verarbeitet nur diese neu hinzugekommenen Dateien."""
+        known_paths = {str(photo.filepath) for photo in self.photos} | self.duplicates | self.cached
+        all_files = self._collect_source_files()
+        new_files = [f for f in all_files if str(f) not in known_paths]
+
+        if not new_files:
+            print("✅ Cache ist aktuell, keine neuen Dateien gefunden")
+            return
+
+        print(f"🆕 {len(new_files)} neue Datei(en) seit letztem Cache-Stand gefunden")
+
+        # Bereits bekannte Hashes vormerken, damit neue Dateien als Duplikate
+        # bereits gecachter Fotos erkannt werden
+        with self.hash_cache_lock:
+            for photo in self.photos:
+                if photo.file_hash:
+                    self.hash_cache[photo.file_hash] = str(photo.filepath)
+
+        self._process_and_finalize(new_files)
+
+    def _process_and_finalize(self, all_files: List[Path]) -> None:
+        """Verarbeitet die übergebenen Dateien parallel und aktualisiert Cache/Geocoding"""
         print(f"📁 Gefunden: {len(all_files)} Dateien zum Verarbeiten")
         print(f"🚀 Starte parallele Verarbeitung mit {self.max_workers} Threads...")
         print("⚠️  Geocoding wird später sequenziell durchgeführt")
-        
+
         # Progress tracking
         processed_count = 0
         duplicates_count = 0
-        
+
         # Parallele Verarbeitung mit ThreadPoolExecutor (OHNE Geocoding)
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             # Alle Tasks starten
             future_to_filepath = {
-                executor.submit(self.process_single_file, filepath): filepath 
+                executor.submit(self.process_single_file, filepath): filepath
                 for filepath in all_files
             }
-            
+
             # Ergebnisse sammeln
             for future in as_completed(future_to_filepath):
                 filepath = future_to_filepath[future]
                 processed_count += 1
-                
+
                 # Progress anzeigen (alle 100 Dateien)
                 if processed_count % 100 == 0 or processed_count == len(all_files):
                     progress = (processed_count / len(all_files)) * 100
                     print(f"📊 Progress: {processed_count}/{len(all_files)} ({progress:.1f}%)")
-                
+
                 try:
                     photo_info = future.result()
                     if photo_info is None:
@@ -1421,10 +1450,10 @@ fallback_date = .*(\\d{4})(\\d{2})(\\d{2}).*
                         self.duplicates.add(str(filepath))
                     else:
                         self.photos.append(photo_info)
-                        
+
                 except Exception as e:
                     print(f"❌ Fehler bei {filepath}: {e}")
-        
+
         print(f"\n✅ Parallel-Verarbeitung abgeschlossen:")
         print(f"  📸 {len(self.photos)} Fotos/Videos erfolgreich verarbeitet")
         print(f"  🗑️  {duplicates_count} Duplikate gefunden")
